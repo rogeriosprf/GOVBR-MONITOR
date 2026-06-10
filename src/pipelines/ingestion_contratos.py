@@ -1,67 +1,76 @@
-import os
+import time
 import requests
 import polars as pl
-from src.core.config import settings
+from datetime import datetime, timedelta
 from src.core.logging import setup_logging, logger
+from src.core.storage import storage
 
 setup_logging()
 
-class ContratosIngestionPipeline:
-    def __init__(self):
-        # Rota de consulta pública definitiva
-        self.base_url = "https://pncp.gov.br/api/consulta/v1/contratos"
-        self.output_dir = os.path.join(settings.LOCAL_DATA_DIR, "bronze")
-        os.makedirs(self.output_dir, exist_ok=True)
 
-    def fetch_contratos_por_data(self, data_alvo: str, pagina: int = 1) -> list:
-        """
-        Busca contratos publicados no PNCP em uma data específica.
-        Formato obrigatório aceito pela API: AAAAMMDD (Ex: '20260601')
-        """
+class ContratosIngestionPipeline:
+    BRONZE_PATH = "bronze/contratos_pncp_raw.parquet"
+
+    def __init__(self):
+        self.base_url = "https://pncp.gov.br/api/consulta/v1/contratos"
+        self.headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        }
+
+    def fetch_contratos_por_data(self, data_alvo: str, pagina: int = 1, tentativas: int = 2) -> list:
         params = {
-            "dataInicial": data_alvo,  # Sem hífens! Ex: 20260601
+            "dataInicial": data_alvo,
             "dataFinal": data_alvo,
             "pagina": pagina
         }
-        
-        try:
-            logger.info(f"Buscando lote de contratos no PNCP para {data_alvo} (Página {pagina})...")
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-            }
-            response = requests.get(self.base_url, params=params, headers=headers, timeout=30)
-            response.raise_for_status()
-            
-            result = response.json()
-            # O PNCP envelopa a lista de contratos dentro da chave 'data'
-            return result.get("data", [])
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Erro ao buscar contratos no PNCP: {e}")
-            return []
+        for tentativa in range(1, tentativas + 1):
+            try:
+                logger.info(f"Buscando contratos PNCP — {data_alvo} pagina {pagina} (tentativa {tentativa})...")
+                response = requests.get(
+                    self.base_url,
+                    params=params,
+                    headers=self.headers,
+                    timeout=60
+                )
+                response.raise_for_status()
+                return response.json().get("data", [])
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"Tentativa {tentativa} falhou: {e}")
+                if tentativa < tentativas:
+                    time.sleep(3 * tentativa)
 
-    def run(self, data_alvo: str = "20260601", max_paginas: int = 1):
-        logger.info("Iniciando extração de dados de contratos do PNCP...")
+        logger.error(f"Todas as tentativas falharam para {data_alvo} pagina {pagina}.")
+        return []
+
+    def run(self, dias: int = 7, max_paginas_por_dia: int = 5):
+        logger.info(f"Iniciando extracao PNCP — ultimos {dias} dias...")
         all_contratos = []
-        
-        for page in range(1, max_paginas + 1):
-            lote = self.fetch_contratos_por_data(data_alvo, pagina=page)
-            if not lote:
-                break
-            all_contratos.extend(lote)
-            
+        data_base = datetime.today()
+
+        for i in range(dias):
+            data_alvo = (data_base - timedelta(days=i)).strftime("%Y%m%d")
+            dia_com_dados = False
+
+            for pagina in range(1, max_paginas_por_dia + 1):
+                lote = self.fetch_contratos_por_data(data_alvo, pagina)
+                if not lote:
+                    break
+                all_contratos.extend(lote)
+                dia_com_dados = True
+                time.sleep(0.3)
+
+            if not dia_com_dados:
+                logger.warning(f"Sem dados para {data_alvo}, pulando.")
+
         if not all_contratos:
-            logger.warning(f"Nenhum contrato retornado para a data {data_alvo}.")
+            logger.warning("Nenhum contrato extraido do PNCP.")
             return
 
-        # Salva o arquivo bruto na Bronze com inferência de schema completa
-        # infer_schema_length=None evita quebra por tipos mistos (int vs str) na API
         df = pl.DataFrame(all_contratos, infer_schema_length=None)
-        output_path = os.path.join(self.output_dir, "contratos_pncp_raw.parquet")
-        df.write_parquet(output_path)
-        
-        logger.info(f"Sucesso! {df.height} contratos reais carregados na camada Bronze em: {output_path}")
+        logger.info(f"{df.height} contratos extraidos.")
+        storage.upload_or_fallback(df, self.BRONZE_PATH)
+        logger.info(f"Bronze Contratos persistido: {self.BRONZE_PATH}")
+
 
 if __name__ == "__main__":
-    pipeline = ContratosIngestionPipeline()
-    # Puxando o lote de contratos reais do dia 1º de Junho de 2026
-    pipeline.run(data_alvo="20260601", max_paginas=1)
+    ContratosIngestionPipeline().run()

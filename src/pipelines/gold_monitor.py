@@ -1,65 +1,62 @@
-import os
 import polars as pl
-from src.core.config import settings
 from src.core.logging import setup_logging, logger
+from src.core.storage import storage
 
 setup_logging()
 
+SILVER_CEIS_PATH = "silver/ceis_clean.parquet"
+SILVER_CONTRATOS_PATH = "silver/contratos_pncp_clean.parquet"
+GOLD_ALERTAS_PATH = "gold/analytics_alertas_corrupcao.parquet"
+
+
 class MonitorGoldPipeline:
-    def __init__(self):
-        self.ceis_path = os.path.join(settings.LOCAL_DATA_DIR, "silver", "ceis_clean.parquet")
-        self.contratos_path = os.path.join(settings.LOCAL_DATA_DIR, "silver", "contratos_pncp_clean.parquet")
-        self.output_dir = os.path.join(settings.LOCAL_DATA_DIR, "gold")
-        os.makedirs(self.output_dir, exist_ok=True)
 
     def run(self):
-        logger.info("🕵️‍♂️ Iniciando cruzamento de dados na camada GOLD para detecção de irregularidades...")
-        
-        if not os.path.exists(self.ceis_path) or not os.path.exists(self.contratos_path):
-            logger.error("Arquivos da camada Silver necessários não foram encontrados. Certifique-se de rodar os dois pipelines.")
+        logger.info("Iniciando cruzamento Gold — detecção de irregularidades...")
+
+        df_ceis = storage.download_parquet(SILVER_CEIS_PATH)
+        df_contratos = storage.download_parquet(SILVER_CONTRATOS_PATH)
+
+        if df_ceis is None or df_contratos is None:
+            logger.error("Silver CEIS ou Contratos não encontrados no R2.")
             return
 
-        # 1. Escaneia os dois Parquets usando LazyFrames (Performance Máxima)
-        lf_ceis = pl.scan_parquet(self.ceis_path)
-        lf_contratos = pl.scan_parquet(self.contratos_path)
-
-        # 2. Executa o JOIN via Chave de Documento (CPF/CNPJ)
-        # Traz apenas os contratos cujos fornecedores possuem alguma sanção ativa/histórica no CEIS
-        lf_matches = lf_contratos.join(
-            lf_ceis,
-            left_on="documento_fornecedor_limpo",
-            right_on="documento_limpo",
-            how="inner"
+        df_alerts = (
+            df_contratos.lazy()
+            .join(
+                df_ceis.lazy(),
+                left_on="documento_fornecedor_limpo",
+                right_on="documento_limpo",
+                how="inner"
+            )
+            .with_columns([
+                pl.when(
+                    (pl.col("data_assinatura") >= pl.col("data_inicio")) &
+                    (
+                        (pl.col("data_fim").is_null()) |
+                        (pl.col("data_assinatura") <= pl.col("data_fim"))
+                    )
+                )
+                .then(pl.lit("CRITICO: CONTRATACAO DE EMPRESA IMPEDIDA"))
+                .otherwise(pl.lit("HISTORICO: FORNECEDOR COM SANCOES CORRELATAS"))
+                .alias("classificacao_risco")
+            ])
+            .collect()
         )
 
-        # 3. Aplica a Regra de Negócio de Auditoria (Verificação de Vigência)
-        lf_alerts = lf_matches.with_columns([
-            pl.when(
-                (pl.col("data_assinatura") >= pl.col("data_inicio")) & 
-                ((pl.col("data_fim").is_null()) | (pl.col("data_assinatura") <= pl.col("data_fim")))
-            )
-            .then(pl.lit("CRÍTICO: CONTRATAÇÃO DE EMPRESA IMPEDIDA"))
-            .otherwise(pl.lit("HISTÓRICO: FORNECEDOR COM SANÇÕES CORRELATAS"))
-            .alias("classificacao_risco")
-        ])
+        storage.upload_or_fallback(df_alerts, GOLD_ALERTAS_PATH)
 
-        # 4. Computa o plano de execução e coleta o DataFrame
-        df_alerts = lf_alerts.collect()
+        total = df_alerts.height
+        criticos = df_alerts.filter(
+            pl.col("classificacao_risco").str.contains("CRITICO")
+        ).height
 
-        # 5. Salva a tabela de Alertas Gerados na Gold
-        output_path = os.path.join(self.output_dir, "analytics_alertas_corrupcao.parquet")
-        df_alerts.write_parquet(output_path)
-
-        logger.info(f"Processamento concluído!")
-        logger.info(f"📊 Total de matches encontrados entre Contratos e Empresas Sancionadas: {df_alerts.height}")
-        
-        # Se houver alertas críticos, exibe o sumário no log
-        if df_alerts.height > 0:
-            criticos = df_alerts.filter(pl.col("classificacao_risco").str.contains("CRÍTICO")).height
-            logger.warning(f"🚨 ALERTA: Detectados {criticos} contratos com indícios de irregularidade grave (empresa impedida)!")
+        logger.info(f"Gold Monitor — {total} matches encontrados.")
+        if criticos > 0:
+            logger.warning(f"ALERTA: {criticos} contratos com indícios de irregularidade grave!")
         else:
-            logger.info("✨ Nenhum alerta crítico gerado para esta amostragem de dados.")
+            logger.info("Nenhum alerta crítico para esta amostragem.")
+
 
 if __name__ == "__main__":
-    pipeline = MonitorGoldPipeline()
-    pipeline.run()
+    MonitorGoldPipeline().run()
