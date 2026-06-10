@@ -3,6 +3,8 @@ from src.core.logging import setup_logging, logger
 from src.pipelines.ingestion import CeisIngestionPipeline
 from src.pipelines.silver import CeisSilverPipeline
 from src.pipelines.gold import CeisGoldPipeline
+from src.pipelines.ingestion_cnep import CnepIngestionPipeline
+from src.pipelines.silver_cnep import CnepSilverPipeline
 from src.pipelines.ingestion_contratos import ContratosIngestionPipeline
 from src.pipelines.silver_contratos import ContratosSilverPipeline
 from src.pipelines.gold_monitor import MonitorGoldPipeline
@@ -12,26 +14,32 @@ setup_logging()
 
 def main():
     logger.info("=" * 50)
-    logger.info("INICIANDO MONITOR DE CORRUPÇÃO v2.0")
+    logger.info("MONITOR DE CORRUPCAO v3.0 — CEIS + CNEP + PNCP")
     logger.info("=" * 50)
 
     try:
-        logger.info("[1/6] Ingestão CEIS (Bronze)...")
+        logger.info("[1/8] Ingestao CEIS (Bronze)...")
         CeisIngestionPipeline().run(max_pages=15)
 
-        logger.info("[2/6] Tratamento CEIS (Silver)...")
+        logger.info("[2/8] Tratamento CEIS (Silver)...")
         CeisSilverPipeline().run()
 
-        logger.info("[3/6] Métricas CEIS (Gold)...")
+        logger.info("[3/8] Metricas CEIS (Gold)...")
         CeisGoldPipeline().run()
 
-        logger.info("[4/6] Ingestão Contratos PNCP (Bronze)...")
+        logger.info("[4/8] Ingestao CNEP (Bronze)...")
+        CnepIngestionPipeline().run(max_pages=15)
+
+        logger.info("[5/8] Tratamento CNEP (Silver)...")
+        CnepSilverPipeline().run()
+
+        logger.info("[6/8] Ingestao Contratos PNCP (Bronze)...")
         ContratosIngestionPipeline().run(dias=7, max_paginas_por_dia=5)
 
-        logger.info("[5/6] Tratamento Contratos PNCP (Silver)...")
+        logger.info("[7/8] Tratamento Contratos PNCP (Silver)...")
         ContratosSilverPipeline().run()
 
-        logger.info("[6/6] Cruzamento de Inteligência (Gold)...")
+        logger.info("[8/8] Cruzamento de Inteligencia (Gold)...")
         MonitorGoldPipeline().run()
 
         logger.info("=" * 50)
@@ -39,7 +47,7 @@ def main():
         logger.info("=" * 50)
 
     except Exception as e:
-        logger.critical(f"Falha na orquestração: {e}")
+        logger.critical(f"Falha na orquestracao: {e}")
         sys.exit(1)
 
 
