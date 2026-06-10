@@ -1,0 +1,25 @@
+[tool.poetry]
+name = "govbr-monitor"
+version = "0.1.0"
+description = "Monitor de auditoria de dados públicos com Polars e Azure"
+authors = ["Rogério Oliveira <seu.email@example.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+polars = "^1.0"
+fastapi = "^0.110.0"
+uvicorn = "^0.28.0"
+streamlit = "^1.32.0"
+requests = "^2.31.0"
+pydantic-settings = "^2.2.1"
+azure-storage-blob = "^12.19.0"
+pyodbc = "^5.1.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.1.0"
+ruff = "^0.3.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
