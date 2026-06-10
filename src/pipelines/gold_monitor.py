@@ -8,6 +8,8 @@ setup_logging()
 SILVER_CEIS_PATH = "silver/ceis_clean.parquet"
 SILVER_CNEP_PATH = "silver/cnep_clean.parquet"
 SILVER_CONTRATOS_PATH = "silver/contratos_pncp_clean.parquet"
+SILVER_CNPJ_PATH = "silver/cnpj_empresas_clean.parquet"
+SILVER_SOCIOS_PATH = "silver/cnpj_socios_clean.parquet"
 GOLD_ALERTAS_PATH = "gold/analytics_alertas_corrupcao.parquet"
 
 
@@ -26,8 +28,6 @@ class MonitorGoldPipeline:
 
         if df_cnep is None:
             logger.warning("Silver CNEP nao encontrado — prosseguindo sem CNEP.")
-
-        today = date.today()
 
         # --- Cruzamento CEIS x Contratos ---
         df_ceis_matches = (
@@ -110,6 +110,43 @@ class MonitorGoldPipeline:
             pl.concat([f.select(colunas_base) for f in frames])
             .sort("classificacao_risco")
         )
+
+        # --- Enriquece com dados do CNPJ ---
+        df_empresas = storage.download_parquet(SILVER_CNPJ_PATH)
+        if df_empresas is not None:
+            df_alerts = df_alerts.join(
+                df_empresas.select([
+                    "documento_limpo",
+                    "situacao_cadastral",
+                    "data_inicio_atividade",
+                    "capital_social",
+                    "porte",
+                    "municipio",
+                    "uf",
+                ]),
+                left_on="documento_fornecedor_limpo",
+                right_on="documento_limpo",
+                how="left"
+            )
+            logger.info("Alertas enriquecidos com dados do CNPJ.")
+
+        # --- Enriquece com socios ---
+        df_socios = storage.download_parquet(SILVER_SOCIOS_PATH)
+        if df_socios is not None:
+            df_socios_agg = (
+                df_socios
+                .group_by("documento_empresa")
+                .agg(
+                    pl.col("nome_socio").str.concat(" | ").alias("socios")
+                )
+            )
+            df_alerts = df_alerts.join(
+                df_socios_agg,
+                left_on="documento_fornecedor_limpo",
+                right_on="documento_empresa",
+                how="left"
+            )
+            logger.info("Alertas enriquecidos com socios.")
 
         storage.upload_or_fallback(df_alerts, GOLD_ALERTAS_PATH)
 
