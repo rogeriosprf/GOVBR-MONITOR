@@ -15,6 +15,81 @@ GOLD_ALERTAS_PATH = "gold/analytics_alertas_corrupcao.parquet"
 
 class MonitorGoldPipeline:
 
+    def calcular_score_risco(self, df: pl.DataFrame) -> pl.DataFrame:
+        return df.with_columns([
+            # Base pelo nível de classificação
+            pl.when(pl.col("classificacao_risco").str.contains("GRAVISSIMO"))
+                .then(pl.lit(60))
+            .when(pl.col("classificacao_risco").str.contains("CRITICO"))
+                .then(pl.lit(40))
+            .otherwise(pl.lit(10))
+            .alias("score_base"),
+
+            # Empresa jovem — menos de 1 ano na data do contrato
+            pl.when(
+                (pl.col("data_inicio_atividade").is_not_null()) &
+                (
+                    (pl.col("data_assinatura") - pl.col("data_inicio_atividade"))
+                    .dt.total_days() < 365
+                )
+            )
+            .then(pl.lit(20))
+            .otherwise(pl.lit(0))
+            .alias("score_empresa_jovem"),
+
+            # Capital social baixo
+            pl.when(
+                (pl.col("capital_social").is_not_null()) &
+                (pl.col("capital_social") < 100_000)
+            )
+            .then(pl.lit(10))
+            .otherwise(pl.lit(0))
+            .alias("score_capital_baixo"),
+
+            # Situação cadastral irregular
+            pl.when(
+                (pl.col("situacao_cadastral").is_not_null()) &
+                (~pl.col("situacao_cadastral").str.contains("ATIVA"))
+            )
+            .then(pl.lit(30))
+            .otherwise(pl.lit(0))
+            .alias("score_situacao_irregular"),
+
+            # Valor do contrato alto
+            pl.when(pl.col("valor_global_contrato") > 1_000_000)
+                .then(pl.lit(15))
+            .when(pl.col("valor_global_contrato") > 100_000)
+                .then(pl.lit(10))
+            .otherwise(pl.lit(0))
+            .alias("score_valor_contrato"),
+
+        ]).with_columns([
+            (
+                pl.col("score_base") +
+                pl.col("score_empresa_jovem") +
+                pl.col("score_capital_baixo") +
+                pl.col("score_situacao_irregular") +
+                pl.col("score_valor_contrato")
+            ).alias("score_risco_total"),
+
+        ]).with_columns([
+            pl.when(pl.col("score_risco_total") >= 80)
+                .then(pl.lit("MAXIMO"))
+            .when(pl.col("score_risco_total") >= 60)
+                .then(pl.lit("ALTO"))
+            .when(pl.col("score_risco_total") >= 40)
+                .then(pl.lit("MEDIO"))
+            .otherwise(pl.lit("BAIXO"))
+            .alias("nivel_risco"),
+
+        ]).drop([
+            "score_base",
+            "score_empresa_jovem",
+            "score_capital_baixo",
+            "score_situacao_irregular",
+            "score_valor_contrato",
+        ])
+
     def run(self):
         logger.info("Iniciando cruzamento Gold — CEIS + CNEP x Contratos...")
 
@@ -137,7 +212,7 @@ class MonitorGoldPipeline:
                 df_socios
                 .group_by("documento_empresa")
                 .agg(
-                    pl.col("nome_socio").str.concat(" | ").alias("socios")
+                    pl.col("nome_socio").str.join(" | ").alias("socios")
                 )
             )
             df_alerts = df_alerts.join(
@@ -147,6 +222,10 @@ class MonitorGoldPipeline:
                 how="left"
             )
             logger.info("Alertas enriquecidos com socios.")
+
+        # --- Score de risco ---
+        df_alerts = self.calcular_score_risco(df_alerts)
+        logger.info("Score de risco calculado.")
 
         storage.upload_or_fallback(df_alerts, GOLD_ALERTAS_PATH)
 
@@ -165,6 +244,15 @@ class MonitorGoldPipeline:
             logger.warning(f"ALERTA MAXIMO: {gravissimos} contratos com empresas punidas por corrupcao!")
         if criticos > 0:
             logger.warning(f"ALERTA: {criticos} contratos com empresas impedidas!")
+
+        logger.info("--- RANKING DE RISCO ---")
+        for row in df_alerts.sort("score_risco_total", descending=True).iter_rows(named=True):
+            logger.info(
+                f"{row['nome_fornecedor']} | "
+                f"Score: {row['score_risco_total']} | "
+                f"Nivel: {row['nivel_risco']} | "
+                f"{row['classificacao_risco']}"
+            )
 
 
 if __name__ == "__main__":
