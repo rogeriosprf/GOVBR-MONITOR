@@ -27,6 +27,7 @@ h1, h2, h3 { font-family: 'JetBrains Mono', monospace; color: #F1F5F9; }
 .alert-gravissimo { border-color: #7C3AED; }
 .alert-historico { border-color: #F59E0B; }
 .alert-fracionamento { border-color: #06B6D4; }
+.alert-influencia { border-color: #A855F7; }
 .alert-empresa { font-family: 'JetBrains Mono', monospace; font-size: 0.95rem; font-weight: 700; color: #F1F5F9; }
 .alert-meta { font-size: 0.78rem; color: #64748B; margin-top: 0.3rem; }
 .score-bar-bg { background: #1E2A3A; border-radius: 4px; height: 6px; margin-top: 0.5rem; }
@@ -35,6 +36,7 @@ h1, h2, h3 { font-family: 'JetBrains Mono', monospace; color: #F1F5F9; }
 .badge-gravissimo { background: #4C1D95; color: #C4B5FD; }
 .badge-historico { background: #78350F; color: #FDE68A; }
 .badge-fracionamento { background: #164E63; color: #67E8F9; }
+.badge-influencia { background: #581C87; color: #E9D5FF; }
 .badge-maximo { background: #7F1D1D; color: #FCA5A5; }
 .badge-alto { background: #7C2D12; color: #FDBA74; }
 .badge-medio { background: #713F12; color: #FDE68A; }
@@ -74,15 +76,16 @@ def plotly_dark(fig):
 @st.cache_data(ttl=300)
 def carregar_dados():
     return {
-        "alertas":       storage.download_parquet("gold/analytics_alertas_corrupcao.parquet"),
-        "sancoes":       storage.download_parquet("gold/fact_ceis_sancoes.parquet"),
-        "orgaos_sanc":   storage.download_parquet("gold/dm_sancoes_por_orgao.parquet"),
-        "testa":         storage.download_parquet("gold/analytics_testa_ferro.parquet"),
-        "fracionamento": storage.download_parquet("gold/analytics_fracionamento.parquet"),
-        "concentracao":  storage.download_parquet("gold/analytics_concentracao.parquet"),
-        "orgaos_risco":  storage.download_parquet("gold/analytics_orgaos_risco.parquet"),
-        "temporal":      storage.download_parquet("gold/analytics_temporal.parquet"),
-        "empenho":       storage.download_parquet("gold/analytics_empenho_direto.parquet"),
+        "alertas":        storage.download_parquet("gold/analytics_alertas_corrupcao.parquet"),
+        "sancoes":        storage.download_parquet("gold/fact_ceis_sancoes.parquet"),
+        "orgaos_sanc":    storage.download_parquet("gold/dm_sancoes_por_orgao.parquet"),
+        "testa":          storage.download_parquet("gold/analytics_testa_ferro.parquet"),
+        "fracionamento":  storage.download_parquet("gold/analytics_fracionamento.parquet"),
+        "concentracao":   storage.download_parquet("gold/analytics_concentracao.parquet"),
+        "orgaos_risco":   storage.download_parquet("gold/analytics_orgaos_risco.parquet"),
+        "temporal":       storage.download_parquet("gold/analytics_temporal.parquet"),
+        "empenho":        storage.download_parquet("gold/analytics_empenho_direto.parquet"),
+        "tse_influencia": storage.download_parquet("gold/analytics_tse_influencia.parquet"),
     }
 
 with st.spinner("Carregando dados..."):
@@ -97,6 +100,7 @@ df_conc         = dados["concentracao"]
 df_orgaos_risco = dados["orgaos_risco"]
 df_temporal     = dados["temporal"]
 df_empenho      = dados["empenho"]
+df_tse          = dados["tse_influencia"]
 
 if df_alertas is None:
     st.error("Dados não encontrados. Execute: `python -m src.main`")
@@ -114,14 +118,17 @@ with st.sidebar:
         "Concentração",
         "Órgãos de Risco",
         "Evolução Temporal",
+        "Influência Política",
         "Sanções",
         "Testa de Ferro",
     ], label_visibility="collapsed")
     st.divider()
-    criticos = df_alertas.filter(pl.col("classificacao_risco").str.contains("CRITICO")).height
+    criticos   = df_alertas.filter(pl.col("classificacao_risco").str.contains("CRITICO")).height
     frac_count = df_frac.height if df_frac is not None else 0
+    tse_count  = df_tse.height if df_tse is not None else 0
     st.markdown(f'<div class="metric-label">alertas críticos</div><div style="font-family:JetBrains Mono;font-size:1.8rem;color:#EF4444;font-weight:700">{criticos}</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="metric-label" style="margin-top:0.5rem">suspeitas fracionamento</div><div style="font-family:JetBrains Mono;font-size:1.8rem;color:#06B6D4;font-weight:700">{frac_count}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="metric-label" style="margin-top:0.5rem">fracionamentos</div><div style="font-family:JetBrains Mono;font-size:1.8rem;color:#06B6D4;font-weight:700">{frac_count}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="metric-label" style="margin-top:0.5rem">influência política</div><div style="font-family:JetBrains Mono;font-size:1.8rem;color:#A855F7;font-weight:700">{tse_count}</div>', unsafe_allow_html=True)
     st.divider()
     st.markdown(f'<p style="color:#64748B;font-size:0.7rem;">Atualizado: {date.today().strftime("%d/%m/%Y")}</p>', unsafe_allow_html=True)
 
@@ -138,9 +145,10 @@ if pagina == "Painel Geral":
     gravissimos = df_alertas.filter(pl.col("classificacao_risco").str.contains("GRAVISSIMO")).height
     valor_total = df_alertas["valor_global_contrato"].sum() or 0
     frac_count  = df_frac.height if df_frac is not None else 0
+    tse_count   = df_tse.height if df_tse is not None else 0
     conc_top    = df_conc.sort("valor_total", descending=True).row(0, named=True) if df_conc is not None and df_conc.height > 0 else None
 
-    col1, col2, col3, col4, col5 = st.columns(5)
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
     with col1:
         st.markdown(f'<div class="metric-card"><div class="metric-value" style="color:#EF4444">{criticos}</div><div class="metric-label">críticos</div></div>', unsafe_allow_html=True)
     with col2:
@@ -148,10 +156,12 @@ if pagina == "Painel Geral":
     with col3:
         st.markdown(f'<div class="metric-card"><div class="metric-value" style="color:#06B6D4">{frac_count}</div><div class="metric-label">fracionamentos</div></div>', unsafe_allow_html=True)
     with col4:
-        st.markdown(f'<div class="metric-card"><div class="metric-value" style="color:#3B82F6">{total}</div><div class="metric-label">total alertas</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card"><div class="metric-value" style="color:#A855F7">{tse_count}</div><div class="metric-label">influência política</div></div>', unsafe_allow_html=True)
     with col5:
+        st.markdown(f'<div class="metric-card"><div class="metric-value" style="color:#3B82F6">{total}</div><div class="metric-label">total alertas</div></div>', unsafe_allow_html=True)
+    with col6:
         valor_fmt = f"R$ {valor_total:,.0f}".replace(",", ".")
-        st.markdown(f'<div class="metric-card"><div class="metric-value" style="color:#F59E0B;font-size:1.3rem">{valor_fmt}</div><div class="metric-label">valor suspeito</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card"><div class="metric-value" style="color:#F59E0B;font-size:1.1rem">{valor_fmt}</div><div class="metric-label">valor suspeito</div></div>', unsafe_allow_html=True)
 
     st.markdown("---")
     col_a, col_b = st.columns(2)
@@ -176,15 +186,13 @@ if pagina == "Painel Geral":
             fig2.add_trace(go.Scatter(
                 x=df_temp_pd["data_assinatura"], y=df_temp_pd["total_contratos"],
                 mode="lines+markers", name="Contratos",
-                line=dict(color="#3B82F6", width=2),
-                marker=dict(size=4)
+                line=dict(color="#3B82F6", width=2), marker=dict(size=4)
             ))
             if "total_alertas" in df_temp_pd.columns:
                 fig2.add_trace(go.Scatter(
                     x=df_temp_pd["data_assinatura"], y=df_temp_pd["total_alertas"],
                     mode="lines+markers", name="Alertas",
-                    line=dict(color="#EF4444", width=2, dash="dot"),
-                    marker=dict(size=4)
+                    line=dict(color="#EF4444", width=2, dash="dot"), marker=dict(size=4)
                 ))
             st.plotly_chart(plotly_dark(fig2), use_container_width=True)
 
@@ -195,11 +203,7 @@ if pagina == "Painel Geral":
         st.markdown(f"""
         <div class="alert-card alert-fracionamento">
             <div class="alert-empresa">{conc_top['nome_fornecedor']}</div>
-            <div class="alert-meta">
-                {conc_top['total_contratos']} contrato(s) · 
-                R$ {conc_top['valor_total']:,.2f} · 
-                {pct}% do valor total da amostra
-            </div>
+            <div class="alert-meta">{conc_top['total_contratos']} contrato(s) · R$ {conc_top['valor_total']:,.2f} · {pct}% do valor total da amostra</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -231,13 +235,12 @@ elif pagina == "Alertas":
 
     sort_col = "score_risco_total" if "score_risco_total" in df_view.columns else "classificacao_risco"
     for row in df_view.sort(sort_col, descending=True).iter_rows(named=True):
-        classe = "alert-critico" if "CRITICO" in row["classificacao_risco"] else "alert-gravissimo" if "GRAVISSIMO" in row["classificacao_risco"] else "alert-historico"
-        score  = row.get("score_risco_total", 0) or 0
-        nivel  = row.get("nivel_risco", "—") or "—"
-        socios = row.get("socios", "—") or "—"
+        classe   = "alert-critico" if "CRITICO" in row["classificacao_risco"] else "alert-gravissimo" if "GRAVISSIMO" in row["classificacao_risco"] else "alert-historico"
+        score    = row.get("score_risco_total", 0) or 0
+        nivel    = row.get("nivel_risco", "—") or "—"
+        socios   = row.get("socios", "—") or "—"
         abertura = row.get("data_inicio_atividade", "—")
         capital  = row.get("capital_social", 0) or 0
-
         st.markdown(f"""
         <div class="alert-card {classe}">
             <div style="display:flex;justify-content:space-between;align-items:flex-start">
@@ -260,9 +263,9 @@ elif pagina == "Alertas":
                 <div class="metric-label">sanção · {row['orgao_sancionador']}</div>
                 <div style="font-size:0.8rem;color:#CBD5E1">{row['tipo_sancao']}</div>
             </div>
-            <div style="margin-top:0.5rem;display:flex;align-items:center;gap:1rem">
-                <div><div class="metric-label">score de risco</div>
-                <div style="font-family:'JetBrains Mono',monospace;font-size:1.1rem;color:#F1F5F9;font-weight:700">{score} <span style="color:#64748B;font-size:0.75rem">/ 100</span></div></div>
+            <div style="margin-top:0.5rem">
+                <div class="metric-label">score de risco</div>
+                <div style="font-family:'JetBrains Mono',monospace;font-size:1.1rem;color:#F1F5F9;font-weight:700">{score} <span style="color:#64748B;font-size:0.75rem">/ 100</span></div>
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -355,13 +358,9 @@ elif pagina == "Órgãos de Risco":
             size="valor_total_suspeito", color="pct_contratos_suspeitos",
             color_continuous_scale=["#1E3A5F", "#EF4444"],
             hover_name="nome_orgao_comprador",
-            labels={
-                "total_contratos_orgao": "Total de Contratos",
-                "total_alertas": "Total de Alertas",
-                "pct_contratos_suspeitos": "% Suspeitos"
-            }
+            labels={"total_contratos_orgao": "Total de Contratos", "total_alertas": "Total de Alertas", "pct_contratos_suspeitos": "% Suspeitos"}
         )
-        fig.update_layout(height=450, coloraxis_showscale=True)
+        fig.update_layout(height=450)
         st.plotly_chart(plotly_dark(fig), use_container_width=True)
 
         st.markdown("#### Ranking de Risco")
@@ -384,7 +383,6 @@ elif pagina == "Evolução Temporal":
         st.info("Sem dados temporais.")
     else:
         df_temp_pd = df_temporal.to_pandas()
-
         fig = go.Figure()
         fig.add_trace(go.Bar(
             x=df_temp_pd["data_assinatura"], y=df_temp_pd["total_contratos"],
@@ -394,14 +392,12 @@ elif pagina == "Evolução Temporal":
             fig.add_trace(go.Scatter(
                 x=df_temp_pd["data_assinatura"], y=df_temp_pd["total_alertas"],
                 name="Alertas", mode="lines+markers",
-                line=dict(color="#EF4444", width=2),
-                yaxis="y2"
+                line=dict(color="#EF4444", width=2), yaxis="y2"
             ))
         fig.update_layout(
             yaxis2=dict(overlaying="y", side="right", showgrid=False, color="#EF4444"),
             legend=dict(bgcolor="#111827", bordercolor="#1E2A3A"),
-            height=400,
-            barmode="overlay"
+            height=400, barmode="overlay"
         )
         st.plotly_chart(plotly_dark(fig), use_container_width=True)
 
@@ -409,9 +405,85 @@ elif pagina == "Evolução Temporal":
         with col1:
             st.markdown(f'<div class="metric-card"><div class="metric-value" style="color:#3B82F6">{df_temporal["total_contratos"].sum()}</div><div class="metric-label">total contratos</div></div>', unsafe_allow_html=True)
         with col2:
-            st.markdown(f'<div class="metric-card"><div class="metric-value" style="color:#F59E0B">R$ {df_temporal["valor_total"].sum():,.0f}</div><div class="metric-label">valor total</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-card"><div class="metric-value" style="color:#F59E0B;font-size:1.3rem">R$ {df_temporal["valor_total"].sum():,.0f}</div><div class="metric-label">valor total</div></div>', unsafe_allow_html=True)
         with col3:
             st.markdown(f'<div class="metric-card"><div class="metric-value" style="color:#64748B">{df_temporal.height}</div><div class="metric-label">dias monitorados</div></div>', unsafe_allow_html=True)
+
+
+# ============================================================
+# INFLUÊNCIA POLÍTICA
+# ============================================================
+elif pagina == "Influência Política":
+    st.markdown("# Influência Política")
+    st.markdown('<p style="color:#64748B;font-size:0.9rem;margin-top:-1rem;margin-bottom:2rem;">Empresas doadoras de campanhas que ganharam contratos públicos</p>', unsafe_allow_html=True)
+
+    if df_tse is None or df_tse.height == 0:
+        st.markdown("""
+        <div class="metric-card" style="text-align:center;padding:3rem">
+            <div style="font-family:'JetBrains Mono',monospace;color:#64748B;font-size:0.9rem">
+                Nenhum cruzamento detectado na amostragem atual.<br><br>
+                <span style="font-size:0.75rem">
+                    O arquivo TSE completo (2M registros) está no R2.<br>
+                    Aumente o volume de contratos para ampliar a detecção.
+                </span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        valor_contratos = df_tse["valor_global_contrato"].sum() or 0
+        valor_doacoes   = df_tse["valor_doacao"].sum() or 0
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.markdown(f'<div class="metric-card"><div class="metric-value" style="color:#A855F7">{df_tse.height}</div><div class="metric-label">matches detectados</div></div>', unsafe_allow_html=True)
+        with col2:
+            st.markdown(f'<div class="metric-card"><div class="metric-value" style="color:#EF4444;font-size:1.3rem">R$ {valor_contratos:,.0f}</div><div class="metric-label">valor em contratos</div></div>', unsafe_allow_html=True)
+        with col3:
+            st.markdown(f'<div class="metric-card"><div class="metric-value" style="color:#F59E0B;font-size:1.3rem">R$ {valor_doacoes:,.0f}</div><div class="metric-label">valor em doações</div></div>', unsafe_allow_html=True)
+
+        st.markdown("#### Ranking por Candidato")
+        df_por_candidato = (
+            df_tse
+            .group_by(["nome_candidato", "partido", "cargo_candidato", "uf_candidato"])
+            .agg([
+                pl.len().alias("total_contratos"),
+                pl.col("valor_global_contrato").sum().alias("valor_contratos"),
+                pl.col("valor_doacao").sum().alias("valor_doacoes"),
+                pl.col("nome_fornecedor").n_unique().alias("empresas_doadoras"),
+            ])
+            .sort("valor_contratos", descending=True)
+        )
+
+        for row in df_por_candidato.iter_rows(named=True):
+            st.markdown(f"""
+            <div class="alert-card alert-influencia">
+                <div style="display:flex;justify-content:space-between;align-items:flex-start">
+                    <div>
+                        <div class="alert-empresa">{row['nome_candidato']}</div>
+                        <div class="alert-meta">{row['partido']} · {row['cargo_candidato']} · {row['uf_candidato']}</div>
+                    </div>
+                    <span class="badge badge-influencia">influência política</span>
+                </div>
+                <div style="margin-top:0.8rem;display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:0.5rem">
+                    <div><div class="metric-label">empresas doadoras</div><div style="font-family:'JetBrains Mono',monospace;font-size:1.1rem;color:#E9D5FF;font-weight:700">{row['empresas_doadoras']}</div></div>
+                    <div><div class="metric-label">contratos ganhos</div><div style="font-family:'JetBrains Mono',monospace;font-size:1.1rem;color:#E9D5FF;font-weight:700">{row['total_contratos']}</div></div>
+                    <div><div class="metric-label">valor contratos</div><div style="font-size:0.8rem;color:#CBD5E1">R$ {row['valor_contratos']:,.2f}</div></div>
+                    <div><div class="metric-label">valor doações</div><div style="font-size:0.8rem;color:#CBD5E1">R$ {row['valor_doacoes']:,.2f}</div></div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.markdown("#### Detalhamento")
+        st.dataframe(
+            df_tse.select([
+                "nome_fornecedor", "documento_fornecedor_limpo",
+                "nome_candidato", "partido", "cargo_candidato",
+                "valor_doacao", "data_doacao",
+                "valor_global_contrato", "data_assinatura",
+                "nome_orgao_comprador",
+            ]).to_pandas(),
+            use_container_width=True, hide_index=True
+        )
 
 
 # ============================================================
