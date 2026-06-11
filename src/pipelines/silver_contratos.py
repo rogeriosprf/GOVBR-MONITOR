@@ -26,7 +26,8 @@ class ContratosSilverPipeline:
             pl.col("orgaoEntidade").struct.field("razaoSocial").str.to_uppercase().str.strip_chars().alias("nome_orgao_comprador"),
             pl.col("dataAssinatura").str.slice(0, 10).str.to_date("%Y-%m-%d", strict=False).alias("data_assinatura"),
             pl.col("dataVigenciaInicio").str.slice(0, 10).str.to_date("%Y-%m-%d", strict=False).alias("data_vigencia_inicio"),
-            pl.col("dataVigenciaFim").str.slice(0, 10).str.to_date("%Y-%m-%d", strict=False).alias("data_vigencia_fim")
+            pl.col("dataVigenciaFim").str.slice(0, 10).str.to_date("%Y-%m-%d", strict=False).alias("data_vigencia_fim"),
+            pl.col("tipoContrato").struct.field("nome").str.to_uppercase().str.strip_chars().alias("tipo_contrato")
         ]).select([
             pl.col("numeroControlePNCP").alias("id_contrato_pncp"),
             pl.col("documento_fornecedor_limpo"),
@@ -34,6 +35,7 @@ class ContratosSilverPipeline:
             pl.col("nome_fornecedor"),
             pl.col("cnpj_orgao_comprador"),
             pl.col("nome_orgao_comprador"),
+            pl.col("tipo_contrato"),
             pl.col("data_assinatura"),
             pl.col("data_vigencia_inicio"),
             pl.col("data_vigencia_fim"),

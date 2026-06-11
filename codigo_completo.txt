@@ -1,130 +1,664 @@
-========================================
-📄 ARQUIVO: src/api/__init__.py
-========================================
-\n\n
-========================================
-📄 ARQUIVO: src/api/main.py
-========================================
-\n\n
-========================================
-📄 ARQUIVO: src/dashboard/app.py
-========================================
-\n\n
-========================================
-📄 ARQUIVO: src/__init__.py
-========================================
-\n\n
-========================================
-📄 ARQUIVO: src/main.py
-========================================
+=== ARQUIVO: /home/rogerio/Projetos/GOVBR/Monitor/show_gold_insights.py ===
+import os
+import polars as pl
+from src.core.config import settings
+
+mart_path = os.path.join(settings.LOCAL_DATA_DIR, "gold", "dm_sancoes_por_orgao.parquet")
+
+if os.path.exists(mart_path):
+    df_orgaos = pl.read_parquet(mart_path)
+    print("\n🏛️  TOP 5 ÓRGÃOS SANCIONADORES NO SEU DATA LAKE:")
+    with pl.Config(tbl_cols=3, tbl_rows=5, fmt_str_lengths=60):
+        print(df_orgaos.head(5))
+else:
+    print("Data Mart não encontrado!")\n
+=== ARQUIVO: /home/rogerio/Projetos/GOVBR/Monitor/inspect_bronze.py ===
+import os
+import polars as pl
+from src.core.config import settings
+
+input_path = os.path.join(settings.LOCAL_DATA_DIR, "bronze", "ceis_raw.parquet")
+
+if not os.path.exists(input_path):
+    print("Arquivo Bronze não encontrado!")
+else:
+    # Carrega apenas a primeira linha para inspecionar
+    df = pl.read_parquet(input_path, n_rows=1)
+    
+    print("--- SCHEMA DO POLARS ---")
+    for col, dtype in df.schema.items():
+        print(f"{col}: {dtype}")
+        
+    print("\n--- CONTEÚDO COMPLETO DA PRIMEIRA LINHA ---")
+    # Configura o Polars para não truncar o print do dicionário/struct
+    with pl.Config(fmt_str_lengths=1000, tbl_rows=1):
+        print(df.to_init_repr())\n
+=== ARQUIVO: /home/rogerio/Projetos/GOVBR/Monitor/src/api/__init__.py ===
+\n
+=== ARQUIVO: /home/rogerio/Projetos/GOVBR/Monitor/src/api/main.py ===
+\n
+=== ARQUIVO: /home/rogerio/Projetos/GOVBR/Monitor/src/dashboard/app.py ===
+import streamlit as st
+import polars as pl
+import plotly.express as px
+import plotly.graph_objects as go
+from datetime import date
+from src.core.storage import storage
+
+# --- Config ---
+st.set_page_config(
+    page_title="GOVBR Monitor | Inteligência Anticorrupção",
+    page_icon="🔍",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# --- CSS ---
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@300;400;500;600&display=swap');
+
+html, body, [class*="css"] {
+    font-family: 'Inter', sans-serif;
+    background-color: #0A0E1A;
+    color: #F1F5F9;
+}
+
+.main { background-color: #0A0E1A; }
+.block-container { padding: 2rem 2rem 2rem 2rem; }
+
+h1, h2, h3 {
+    font-family: 'JetBrains Mono', monospace;
+    color: #F1F5F9;
+}
+
+.metric-card {
+    background: #111827;
+    border: 1px solid #1E2A3A;
+    border-radius: 8px;
+    padding: 1.2rem 1.5rem;
+    margin-bottom: 1rem;
+}
+
+.metric-value {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 2.2rem;
+    font-weight: 700;
+    line-height: 1;
+    margin-bottom: 0.3rem;
+}
+
+.metric-label {
+    font-size: 0.75rem;
+    color: #64748B;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+}
+
+.alert-card {
+    background: #111827;
+    border-left: 4px solid;
+    border-radius: 0 8px 8px 0;
+    padding: 1rem 1.2rem;
+    margin-bottom: 0.75rem;
+}
+
+.alert-critico  { border-color: #EF4444; }
+.alert-gravissimo { border-color: #7C3AED; }
+.alert-historico { border-color: #F59E0B; }
+
+.alert-empresa {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: #F1F5F9;
+}
+
+.alert-meta {
+    font-size: 0.78rem;
+    color: #64748B;
+    margin-top: 0.3rem;
+}
+
+.score-bar-bg {
+    background: #1E2A3A;
+    border-radius: 4px;
+    height: 6px;
+    margin-top: 0.5rem;
+}
+
+.badge {
+    display: inline-block;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.65rem;
+    font-weight: 700;
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.badge-critico    { background: #7F1D1D; color: #FCA5A5; }
+.badge-gravissimo { background: #4C1D95; color: #C4B5FD; }
+.badge-historico  { background: #78350F; color: #FDE68A; }
+.badge-maximo     { background: #7F1D1D; color: #FCA5A5; }
+.badge-alto       { background: #7C2D12; color: #FDBA74; }
+.badge-medio      { background: #713F12; color: #FDE68A; }
+.badge-baixo      { background: #14532D; color: #86EFAC; }
+
+.stDataFrame { background: #111827; }
+section[data-testid="stSidebar"] {
+    background-color: #0D1117;
+    border-right: 1px solid #1E2A3A;
+}
+</style>
+""", unsafe_allow_html=True)
+
+
+# --- Helpers ---
+def badge_risco(classificacao: str) -> str:
+    if "GRAVISSIMO" in classificacao:
+        return '<span class="badge badge-gravissimo">⚠ gravíssimo</span>'
+    if "CRITICO" in classificacao:
+        return '<span class="badge badge-critico">🔴 crítico</span>'
+    return '<span class="badge badge-historico">🟡 histórico</span>'
+
+
+def badge_nivel(nivel: str) -> str:
+    mapa = {
+        "MAXIMO": "badge-maximo", "ALTO": "badge-alto",
+        "MEDIO": "badge-medio",   "BAIXO": "badge-baixo",
+    }
+    cls = mapa.get(nivel, "badge-baixo")
+    return f'<span class="badge {cls}">{nivel}</span>'
+
+
+def score_bar(score: int, max_score: int = 100) -> str:
+    pct = min(score / max_score * 100, 100)
+    if pct >= 80:
+        cor = "#EF4444"
+    elif pct >= 60:
+        cor = "#F97316"
+    elif pct >= 40:
+        cor = "#F59E0B"
+    else:
+        cor = "#10B981"
+    # CORREÇÃO: Tudo em uma única linha ou sem quebras com tabulação na string
+    return f'<div class="score-bar-bg"><div style="width:{pct}%;background:{cor};height:6px;border-radius:4px;transition:width 0.8s ease;"></div></div>'
+
+@st.cache_data(ttl=300)
+def carregar_dados():
+    alertas = storage.download_parquet("gold/analytics_alertas_corrupcao.parquet")
+    sancoes = storage.download_parquet("gold/fact_ceis_sancoes.parquet")
+    orgaos  = storage.download_parquet("gold/dm_sancoes_por_orgao.parquet")
+    testa   = storage.download_parquet("gold/analytics_testa_ferro.parquet")
+    return alertas, sancoes, orgaos, testa
+
+
+# --- Load ---
+with st.spinner("Carregando dados do R2..."):
+    df_alertas, df_sancoes, df_orgaos, df_testa = carregar_dados()
+
+if df_alertas is None:
+    st.error("Dados não encontrados. Execute o pipeline primeiro: `python -m src.main`")
+    st.stop()
+
+# --- Sidebar ---
+with st.sidebar:
+    st.markdown("### 🔍 GOVBR Monitor")
+    st.markdown('<p style="color:#64748B;font-size:0.75rem;">Inteligência Anticorrupção</p>', unsafe_allow_html=True)
+    st.divider()
+
+    pagina = st.radio(
+        "Navegação",
+        ["Painel Geral", "Alertas", "Sanções", "Testa de Ferro"],
+        label_visibility="collapsed"
+    )
+
+    st.divider()
+
+    if df_alertas is not None:
+        total_alertas = df_alertas.height
+        criticos = df_alertas.filter(pl.col("classificacao_risco").str.contains("CRITICO")).height
+        st.markdown(f'<div class="metric-label">alertas ativos</div>', unsafe_allow_html=True)
+        st.markdown(f'<div style="font-family:JetBrains Mono;font-size:1.8rem;color:#EF4444;font-weight:700">{criticos}</div>', unsafe_allow_html=True)
+
+    st.divider()
+    st.markdown(f'<p style="color:#64748B;font-size:0.7rem;">Atualizado: {date.today().strftime("%d/%m/%Y")}</p>', unsafe_allow_html=True)
+
+
+# ============================================================
+# PAINEL GERAL
+# ============================================================
+if pagina == "Painel Geral":
+    st.markdown("# GOVBR Monitor")
+    st.markdown('<p style="color:#64748B;font-size:0.9rem;margin-top:-1rem;margin-bottom:2rem;">Sistema de Inteligência Anticorrupção — Dados Públicos Brasileiros</p>', unsafe_allow_html=True)
+
+    # KPIs
+    col1, col2, col3, col4 = st.columns(4)
+
+    total = df_alertas.height
+    criticos = df_alertas.filter(pl.col("classificacao_risco").str.contains("CRITICO")).height
+    gravissimos = df_alertas.filter(pl.col("classificacao_risco").str.contains("GRAVISSIMO")).height
+    valor_total = df_alertas["valor_global_contrato"].sum() or 0
+
+    with col1:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-value" style="color:#EF4444">{criticos}</div>
+            <div class="metric-label">contratos críticos</div>
+        </div>""", unsafe_allow_html=True)
+
+    with col2:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-value" style="color:#7C3AED">{gravissimos}</div>
+            <div class="metric-label">gravíssimos</div>
+        </div>""", unsafe_allow_html=True)
+
+    with col3:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-value" style="color:#3B82F6">{total}</div>
+            <div class="metric-label">total de alertas</div>
+        </div>""", unsafe_allow_html=True)
+
+    with col4:
+        valor_fmt = f"R$ {valor_total:,.0f}".replace(",", ".")
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-value" style="color:#F59E0B;font-size:1.4rem">{valor_fmt}</div>
+            <div class="metric-label">valor em contratos suspeitos</div>
+        </div>""", unsafe_allow_html=True)
+
+    st.markdown("---")
+    col_a, col_b = st.columns(2)
+
+    with col_a:
+        st.markdown("#### Distribuição de Risco")
+        if df_alertas.height > 0:
+            contagem = (
+                df_alertas
+                .group_by("classificacao_risco")
+                .agg(pl.len().alias("total"))
+                .sort("total", descending=True)
+            )
+            fig = px.bar(
+                contagem.to_pandas(),
+                x="classificacao_risco",
+                y="total",
+                color="classificacao_risco",
+                color_discrete_map={
+                    "CRITICO: CONTRATACAO DE EMPRESA IMPEDIDA": "#EF4444",
+                    "GRAVISSIMO: EMPRESA PUNIDA POR CORRUPCAO CONTRATANDO": "#7C3AED",
+                    "HISTORICO: FORNECEDOR COM SANCOES CORRELATAS": "#F59E0B",
+                },
+            )
+            fig.update_layout(
+                paper_bgcolor="#111827",
+                plot_bgcolor="#111827",
+                font_color="#F1F5F9",
+                showlegend=False,
+                margin=dict(l=0, r=0, t=20, b=0),
+                xaxis=dict(showgrid=False),
+                yaxis=dict(showgrid=True, gridcolor="#1E2A3A"),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+    with col_b:
+        st.markdown("#### Top Órgãos Sancionadores")
+        if df_orgaos is not None:
+            fig2 = px.bar(
+                df_orgaos.head(10).to_pandas(),
+                x="total_sancoes",
+                y="orgao_sancionador",
+                orientation="h",
+                color="sancoes_ativas",
+                color_continuous_scale=["#1E2A3A", "#EF4444"],
+            )
+            fig2.update_layout(
+                paper_bgcolor="#111827",
+                plot_bgcolor="#111827",
+                font_color="#F1F5F9",
+                margin=dict(l=0, r=0, t=20, b=0),
+                xaxis=dict(showgrid=True, gridcolor="#1E2A3A"),
+                yaxis=dict(showgrid=False),
+                coloraxis_showscale=False,
+            )
+            st.plotly_chart(fig2, use_container_width=True)
+
+
+# ============================================================
+# ALERTAS
+# ============================================================
+elif pagina == "Alertas":
+    st.markdown("# Alertas Detectados")
+    st.markdown(f'<p style="color:#64748B;font-size:0.9rem;margin-top:-1rem;margin-bottom:2rem;">{df_alertas.height} ocorrências identificadas</p>', unsafe_allow_html=True)
+
+    # Filtros
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        niveis = ["Todos"] + (df_alertas["nivel_risco"].unique().to_list() if "nivel_risco" in df_alertas.columns else [])
+        filtro_nivel = st.selectbox("Nível de risco", niveis)
+    with col_f2:
+        filtro_busca = st.text_input("Buscar empresa", placeholder="Nome ou CNPJ...")
+
+    df_view = df_alertas
+    if filtro_nivel != "Todos":
+        df_view = df_view.filter(pl.col("nivel_risco") == filtro_nivel)
+    if filtro_busca:
+        df_view = df_view.filter(
+            pl.col("nome_fornecedor").str.to_uppercase().str.contains(filtro_busca.upper()) |
+            pl.col("documento_fornecedor_limpo").str.contains(filtro_busca)
+        )
+
+    st.markdown(f'<p style="color:#64748B;font-size:0.8rem;">{df_view.height} resultado(s)</p>', unsafe_allow_html=True)
+
+    for row in df_view.sort("score_risco_total" if "score_risco_total" in df_view.columns else "classificacao_risco", descending=True).iter_rows(named=True):
+        classe_card = "alert-critico" if "CRITICO" in row["classificacao_risco"] else "alert-gravissimo" if "GRAVISSIMO" in row["classificacao_risco"] else "alert-historico"
+        score = row.get("score_risco_total", 0) or 0
+        nivel = row.get("nivel_risco", "—") or "—"
+        socios = row.get("socios", "—") or "—"
+        abertura = row.get("data_inicio_atividade", "—")
+        capital = row.get("capital_social", 0) or 0
+
+        # CORREÇÃO: Envelopado com st.markdown e unsafe_allow_html=True
+        st.markdown(f"""
+        <div class="alert-card {classe_card}">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start">
+                <div>
+                    <div class="alert-empresa">{row['nome_fornecedor']}</div>
+                    <div class="alert-meta">CNPJ: {row['documento_fornecedor_limpo']} · {row.get('municipio','—')}/{row.get('uf','—')}</div>
+                </div>
+                <div style="text-align:right">
+                    {badge_risco(row['classificacao_risco'])}
+                    <div style="margin-top:0.3rem">{badge_nivel(nivel)}</div>
+                </div>
+            </div>
+            {score_bar(score)}
+            <div style="margin-top:0.8rem;display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.5rem">
+                <div>
+                    <div class="metric-label">órgão contratante</div>
+                    <div style="font-size:0.8rem;color:#CBD5E1">{row['nome_orgao_comprador']}</div>
+                </div>
+                <div>
+                    <div class="metric-label">valor do contrato</div>
+                    <div style="font-size:0.8rem;color:#CBD5E1">R$ {row['valor_global_contrato']:,.2f}</div>
+                </div>
+                <div>
+                    <div class="metric-label">data assinatura</div>
+                    <div style="font-size:0.8rem;color:#CBD5E1">{row['data_assinatura']}</div>
+                </div>
+                <div>
+                    <div class="metric-label">sócios</div>
+                    <div style="font-size:0.8rem;color:#CBD5E1">{socios}</div>
+                </div>
+                <div>
+                    <div class="metric-label">abertura empresa</div>
+                    <div style="font-size:0.8rem;color:#CBD5E1">{abertura}</div>
+                </div>
+                <div>
+                    <div class="metric-label">capital social</div>
+                    <div style="font-size:0.8rem;color:#CBD5E1">R$ {capital:,.0f}</div>
+                </div>
+            </div>
+            <div style="margin-top:0.8rem">
+                <div class="metric-label">sanção</div>
+                <div style="font-size:0.8rem;color:#CBD5E1">{row['tipo_sancao']} · {row['orgao_sancionador']}</div>
+            </div>
+            <div style="margin-top:0.3rem">
+                <div class="metric-label">score de risco</div>
+                <div style="font-family:'JetBrains Mono',monospace;font-size:1.1rem;color:#F1F5F9;font-weight:700">{score} <span style="color:#64748B;font-size:0.75rem">/ 100</span></div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+
+# ============================================================
+# SANÇÕES
+# ============================================================
+elif pagina == "Sanções":
+    st.markdown("# Base de Sanções CEIS")
+    st.markdown(f'<p style="color:#64748B;font-size:0.9rem;margin-top:-1rem;margin-bottom:2rem;">{df_sancoes.height if df_sancoes is not None else 0} registros carregados</p>', unsafe_allow_html=True)
+
+    if df_sancoes is not None:
+        col1, col2 = st.columns(2)
+        ativas = df_sancoes.filter(pl.col("status_sancao") == "ATIVA").height
+        expiradas = df_sancoes.height - ativas
+
+        with col1:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-value" style="color:#EF4444">{ativas}</div>
+                <div class="metric-label">sanções ativas</div>
+            </div>""", unsafe_allow_html=True)
+
+        with col2:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-value" style="color:#64748B">{expiradas}</div>
+                <div class="metric-label">sanções expiradas</div>
+            </div>""", unsafe_allow_html=True)
+
+        st.markdown("#### Registros")
+        colunas = ["nome_empresa_ou_pessoa", "documento_limpo", "tipo_sancao", "data_inicio", "data_fim", "status_sancao", "orgao_sancionador"]
+        colunas_disp = [c for c in colunas if c in df_sancoes.columns]
+        st.dataframe(
+            df_sancoes.select(colunas_disp).to_pandas(),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
+# ============================================================
+# TESTA DE FERRO
+# ============================================================
+elif pagina == "Testa de Ferro":
+    st.markdown("# Detecção de Testa de Ferro")
+    st.markdown('<p style="color:#64748B;font-size:0.9rem;margin-top:-1rem;margin-bottom:2rem;">Sócios de empresas impedidas contratando via outras empresas</p>', unsafe_allow_html=True)
+
+    if df_testa is None or df_testa.height == 0:
+        st.markdown("""
+        <div class="metric-card" style="text-align:center;padding:3rem">
+            <div style="font-family:'JetBrains Mono',monospace;color:#64748B;font-size:0.9rem">
+                Nenhum padrão detectado na amostragem atual.<br><br>
+                <span style="font-size:0.75rem">Aumente o volume de dados para ampliar a detecção.</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.warning(f"{df_testa.height} padrão(ões) de testa de ferro detectado(s)")
+        st.dataframe(df_testa.to_pandas(), use_container_width=True, hide_index=True)\n
+=== ARQUIVO: /home/rogerio/Projetos/GOVBR/Monitor/src/__init__.py ===
+\n
+=== ARQUIVO: /home/rogerio/Projetos/GOVBR/Monitor/src/main.py ===
 import sys
-from datetime import datetime, timedelta
 from src.core.logging import setup_logging, logger
 from src.pipelines.ingestion import CeisIngestionPipeline
 from src.pipelines.silver import CeisSilverPipeline
 from src.pipelines.gold import CeisGoldPipeline
+from src.pipelines.ingestion_cnep import CnepIngestionPipeline
+from src.pipelines.silver_cnep import CnepSilverPipeline
 from src.pipelines.ingestion_contratos import ContratosIngestionPipeline
 from src.pipelines.silver_contratos import ContratosSilverPipeline
 from src.pipelines.gold_monitor import MonitorGoldPipeline
 
 setup_logging()
 
+
 def main():
-    logger.info("==================================================")
-    logger.info("🚀 INICIANDO ENGINE DO MONITOR DE CORRUPÇÃO v1.0")
-    logger.info("==================================================")
-    
+    logger.info("=" * 50)
+    logger.info("MONITOR DE CORRUPCAO v3.0 — CEIS + CNEP + PNCP")
+    logger.info("=" * 50)
+
     try:
-        # ---- ESTEIRA 1: CEIS (Aumentando para 15 páginas de sanções) ----
-        logger.info("🔹 [1/6] Ingestão CEIS (Bronze) - Expandindo Amostragem...")
-        CeisIngestionPipeline().run(max_pages=15) 
-        
-        logger.info("🔹 [2/6] Tratamento CEIS (Silver)...")
+        logger.info("[1/8] Ingestao CEIS (Bronze)...")
+        CeisIngestionPipeline().run(max_pages=15)
+
+        logger.info("[2/8] Tratamento CEIS (Silver)...")
         CeisSilverPipeline().run()
-        
-        logger.info("🔹 [3/6] Métricas CEIS (Gold)...")
+
+        logger.info("[3/8] Metricas CEIS (Gold)...")
         CeisGoldPipeline().run()
-        
-        # ---- ESTEIRA 2: PNCP (Varrendo múltiplos dias de contratos) ----
-        logger.info("🔹 [4/6] Ingestão Contratos PNCP (Bronze) - Loop Histórico...")
-        
-        contratos_pipeline = ContratosIngestionPipeline()
-        
-        # Vamos gerar uma lista de datas para varrer os últimos 7 dias
-        # Mudando a lógica do seu pipeline interno para acumular os dados
-        data_base = datetime(2026, 6, 1)
-        for i in range(7):
-            data_alvo = (data_base + timedelta(days=i)).strftime("%Y%m%dd")
-            # Força o download do lote diário (reutilizando a estrutura que criamos)
-            contratos_pipeline.fetch_contratos_por_data(data_alvo=data_alvo[:-1], pagina=1)
-            
-        # Para fins de portfólio e para o teste ganhar corpo, vamos rodar a carga
-        # consolidada que já temos expandida de forma nativa.
-        contratos_pipeline.run(data_alvo="20260601", max_paginas=5) # Baixando 5 páginas do mesmo dia (250 contratos)
-        
-        logger.info("🔹 [5/6] Tratamento Contratos PNCP (Silver)...")
+
+        logger.info("[4/8] Ingestao CNEP (Bronze)...")
+        CnepIngestionPipeline().run(max_pages=15)
+
+        logger.info("[5/8] Tratamento CNEP (Silver)...")
+        CnepSilverPipeline().run()
+
+        logger.info("[6/8] Ingestao Contratos PNCP (Bronze)...")
+        ContratosIngestionPipeline().run(dias=7, max_paginas_por_dia=5)
+
+        logger.info("[7/8] Tratamento Contratos PNCP (Silver)...")
         ContratosSilverPipeline().run()
-        
-        # ---- ESTEIRA 3: MONITOR DE AUDITORIA (O Cruzamento em Larga Escala) ----
-        logger.info("🔹 [6/6] Rodando Cruzamento de Inteligência (Gold)...")
+
+        logger.info("[8/8] Cruzamento de Inteligencia (Gold)...")
         MonitorGoldPipeline().run()
 
-        logger.info("==================================================")
-        logger.info("✅ MONITOR DE CORRUPÇÃO EXECUTADO COM SUCESSO!")
-        logger.info("==================================================")
+        logger.info("=" * 50)
+        logger.info("MONITOR EXECUTADO COM SUCESSO")
+        logger.info("=" * 50)
 
     except Exception as e:
-        logger.critical(f"💥 Falha catastrófica na orquestração: {e}")
+        logger.critical(f"Falha na orquestracao: {e}")
         sys.exit(1)
 
+
 if __name__ == "__main__":
-    main()\n\n
-========================================
-📄 ARQUIVO: src/pipelines/silver_contratos.py
-========================================
-import os
+    main()\n
+=== ARQUIVO: /home/rogerio/Projetos/GOVBR/Monitor/src/pipelines/silver_cnpj.py ===
 import polars as pl
-from src.core.config import settings
 from src.core.logging import setup_logging, logger
+from src.core.storage import storage
 
 setup_logging()
 
-class ContratosSilverPipeline:
-    def __init__(self):
-        self.input_path = os.path.join(settings.LOCAL_DATA_DIR, "bronze", "contratos_pncp_raw.parquet")
-        self.output_dir = os.path.join(settings.LOCAL_DATA_DIR, "silver")
-        os.makedirs(self.output_dir, exist_ok=True)
+BRONZE_PATH = "bronze/cnpj_empresas_raw.parquet"
+SILVER_PATH = "silver/cnpj_empresas_clean.parquet"
+SILVER_SOCIOS_PATH = "silver/cnpj_socios_clean.parquet"
+
+
+class CnpjSilverPipeline:
 
     def run(self):
-        logger.info("Iniciando processamento da camada SILVER para os Contratos do PNCP...")
-        
-        if not os.path.exists(self.input_path):
-            logger.error(f"Arquivo Bronze de contratos não encontrado em: {self.input_path}.")
+        logger.info("Iniciando Silver CNPJ...")
+
+        df = storage.download_parquet(BRONZE_PATH)
+        if df is None:
+            logger.error("Bronze CNPJ nao encontrado no R2.")
             return
 
-        # 1. Leitura do LazyFrame
-        lf = pl.scan_parquet(self.input_path)
+        # --- Empresa ---
+        df_empresas = df.select([
+            pl.col("cnpj").str.replace_all(r"[\.\-\/]", "").alias("documento_limpo"),
+            pl.col("razao_social").str.to_uppercase().str.strip_chars(),
+            pl.col("nome_fantasia").str.to_uppercase().str.strip_chars(),
+            pl.col("descricao_situacao_cadastral").str.to_uppercase().alias("situacao_cadastral"),
+            pl.col("descricao_motivo_situacao_cadastral").str.to_uppercase().alias("motivo_situacao"),
+            pl.col("data_inicio_atividade").str.to_date("%Y-%m-%d", strict=False),
+            pl.col("data_situacao_cadastral").str.to_date("%Y-%m-%d", strict=False),
+            pl.col("porte").str.to_uppercase(),
+            pl.col("natureza_juridica").str.to_uppercase(),
+            pl.col("capital_social"),
+            pl.col("cnae_fiscal_descricao").str.to_uppercase().alias("atividade_principal"),
+            pl.col("opcao_pelo_simples"),
+            pl.col("opcao_pelo_mei"),
+            pl.col("descricao_identificador_matriz_filial").str.to_uppercase().alias("matriz_ou_filial"),
+            pl.col("logradouro").str.to_uppercase().str.strip_chars(),
+            pl.col("numero"),
+            pl.col("bairro").str.to_uppercase().str.strip_chars(),
+            pl.col("municipio").str.to_uppercase().str.strip_chars(),
+            pl.col("uf"),
+            pl.col("cep"),
+        ])
 
-        # 2. Transformações e Limpeza de Schema via Polars Expressions
-        lf_clean = lf.with_columns([
-            # Limpa o documento do fornecedor (remove pontos, traços, barras se houver)
+        storage.upload_or_fallback(df_empresas, SILVER_PATH)
+        logger.info(f"Silver Empresas concluido — {df_empresas.height} registros.")
+
+        # --- Sócios --- explode a lista qsa
+        df_socios = (
+            df.select([
+                pl.col("cnpj").str.replace_all(r"[\.\-\/]", "").alias("documento_empresa"),
+                pl.col("razao_social").str.to_uppercase().str.strip_chars(),
+                pl.col("qsa"),
+            ])
+            .explode("qsa")
+            .with_columns([
+                pl.col("qsa").struct.field("nome_socio").str.to_uppercase().str.strip_chars(),
+                pl.col("qsa").struct.field("cnpj_cpf_do_socio").str.replace_all(r"[\.\-\/\*]", "").alias("documento_socio"),
+                pl.col("qsa").struct.field("qualificacao_socio").str.to_uppercase(),
+                pl.col("qsa").struct.field("faixa_etaria"),
+                pl.col("qsa").struct.field("data_entrada_sociedade").str.to_date("%Y-%m-%d", strict=False),
+            ])
+            .select([
+                pl.col("documento_empresa"),
+                pl.col("razao_social"),
+                pl.col("nome_socio"),
+                pl.col("documento_socio"),
+                pl.col("qualificacao_socio"),
+                pl.col("faixa_etaria"),
+                pl.col("data_entrada_sociedade"),
+            ])
+        )
+
+        storage.upload_or_fallback(df_socios, SILVER_SOCIOS_PATH)
+        logger.info(f"Silver Socios concluido — {df_socios.height} socios extraidos.")
+
+        # Preview dos alertas enriquecidos
+        logger.info("--- EMPRESAS SUSPEITAS ---")
+        for row in df_empresas.iter_rows(named=True):
+            logger.info(
+                f"{row['razao_social']} | "
+                f"Situacao: {row['situacao_cadastral']} | "
+                f"Abertura: {row['data_inicio_atividade']} | "
+                f"Capital: R$ {row['capital_social']:,.2f} | "
+                f"{row['municipio']}/{row['uf']}"
+            )
+
+        logger.info("--- SOCIOS ---")
+        for row in df_socios.iter_rows(named=True):
+            logger.info(
+                f"{row['razao_social']} → "
+                f"{row['nome_socio']} | "
+                f"Doc: {row['documento_socio']} | "
+                f"Entrada: {row['data_entrada_sociedade']}"
+            )
+
+
+if __name__ == "__main__":
+    CnpjSilverPipeline().run()\n
+=== ARQUIVO: /home/rogerio/Projetos/GOVBR/Monitor/src/pipelines/silver_contratos.py ===
+import polars as pl
+from src.core.logging import setup_logging, logger
+from src.core.storage import storage
+
+setup_logging()
+
+BRONZE_PATH = "bronze/contratos_pncp_raw.parquet"
+SILVER_PATH = "silver/contratos_pncp_clean.parquet"
+
+
+class ContratosSilverPipeline:
+
+    def run(self):
+        logger.info("Iniciando Silver Contratos PNCP...")
+
+        df_bronze = storage.download_parquet(BRONZE_PATH)
+        if df_bronze is None:
+            logger.error("Bronze Contratos não encontrado no R2. Execute a ingestão primeiro.")
+            return
+
+        lf_clean = df_bronze.lazy().with_columns([
             pl.col("niFornecedor").str.replace_all(r"[\.\-\/\* ]", "").alias("documento_fornecedor_limpo"),
-            
-            # Normaliza strings de texto para caixa alta
             pl.col("nomeRazaoSocialFornecedor").str.to_uppercase().str.strip_chars().alias("nome_fornecedor"),
             pl.col("objetoContrato").str.strip_chars().alias("objeto_contrato"),
-            
-            # Extrai os dados da struct do Órgão Comprador
             pl.col("orgaoEntidade").struct.field("cnpj").str.replace_all(r"[\.\-\/\* ]", "").alias("cnpj_orgao_comprador"),
             pl.col("orgaoEntidade").struct.field("razaoSocial").str.to_uppercase().str.strip_chars().alias("nome_orgao_comprador"),
-            
-            # Realiza o parse das datas (O PNCP geralmente envia YYYY-MM-DD...)
             pl.col("dataAssinatura").str.slice(0, 10).str.to_date("%Y-%m-%d", strict=False).alias("data_assinatura"),
             pl.col("dataVigenciaInicio").str.slice(0, 10).str.to_date("%Y-%m-%d", strict=False).alias("data_vigencia_inicio"),
             pl.col("dataVigenciaFim").str.slice(0, 10).str.to_date("%Y-%m-%d", strict=False).alias("data_vigencia_fim")
-            
         ]).select([
-            # Seleciona apenas os atributos analíticos úteis para o cruzamento de auditoria
             pl.col("numeroControlePNCP").alias("id_contrato_pncp"),
             pl.col("documento_fornecedor_limpo"),
             pl.col("tipoPessoa").alias("tipo_pessoa_fornecedor"),
@@ -137,224 +671,191 @@ class ContratosSilverPipeline:
             pl.col("valorGlobal").alias("valor_global_contrato")
         ])
 
-        # 3. Coleta e Persiste os dados limpos
         df_silver = lf_clean.collect()
-        output_path = os.path.join(self.output_dir, "contratos_pncp_clean.parquet")
-        df_silver.write_parquet(output_path)
-        
-        logger.info(f"Camada SILVER de Contratos finalizada! Volume: {df_silver.height} linhas.")
-        logger.info(f"Arquivo persistido em: {output_path}")
+        storage.upload_or_fallback(df_silver, SILVER_PATH)
+        logger.info(f"Silver Contratos concluído — {df_silver.height} registros.")
+
 
 if __name__ == "__main__":
-    pipeline = ContratosSilverPipeline()
-    pipeline.run()\n\n
-========================================
-📄 ARQUIVO: src/pipelines/ingestion.py
-========================================
-import os
+    ContratosSilverPipeline().run()\n
+=== ARQUIVO: /home/rogerio/Projetos/GOVBR/Monitor/src/pipelines/ingestion.py ===
 import time
 import requests
 import polars as pl
 from src.core.config import settings
 from src.core.logging import setup_logging, logger
+from src.core.storage import storage
 
-# Inicializa as configurações de log corretamente
 setup_logging()
 
+
 class CeisIngestionPipeline:
+    BRONZE_PATH = "bronze/ceis_raw.parquet"
+
     def __init__(self):
         self.base_url = f"{settings.CGU_API_BASE_URL}/ceis"
-        
-        # Remove espaços invisíveis ou quebras de linha da chave
         api_key = settings.CGU_API_KEY.strip()
-        
         self.headers = {
             "Accept": "application/json",
             "chave-api-dados": api_key
         }
-        self.output_dir = os.path.join(settings.LOCAL_DATA_DIR, "bronze")
-        os.makedirs(self.output_dir, exist_ok=True)
-        
-        # Validação da chave nos logs de forma segura
         key_preview = f"{api_key[:4]}...{api_key[-4:]}" if len(api_key) > 8 else "CHAVE_INVALIDA"
-        logger.info(f"Headers configurados. Chave identificada: {key_preview} (Tamanho: {len(api_key)})")
+        logger.info(f"CEIS Pipeline iniciado. Chave: {key_preview}")
 
     def fetch_page(self, page: int) -> list:
-        """Busca uma página específica de dados reais da API do CEIS."""
         params = {"pagina": page}
         try:
-            response = requests.get(self.base_url, headers=self.headers, params=params, timeout=30)
-            
+            response = requests.get(
+                self.base_url,
+                headers=self.headers,
+                params=params,
+                timeout=30
+            )
             if response.status_code == 429:
                 logger.warning("Rate limit atingido. Aguardando 15 segundos...")
                 time.sleep(15)
                 return self.fetch_page(page)
-                
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
             logger.error(f"Erro ao buscar página {page}: {e}")
             return []
 
-    def run(self, max_pages: int = 3):
-        """Executa o loop de ingestão real."""
-        logger.info("Iniciando extração de dados REAIS do CEIS da API do Governo...")
+    def run(self, max_pages: int = 15):
+        logger.info("Iniciando extração CEIS...")
         all_records = []
-        page = 1
-
-        while page <= max_pages:
-            logger.info(f"Baixando página {page}...")
+        for page in range(1, max_pages + 1):
+            logger.info(f"Baixando página {page}/{max_pages}...")
             data = self.fetch_page(page)
-            
             if not data:
-                logger.info("Fim dos dados ou erro na paginação.")
+                logger.info("Fim dos dados.")
                 break
-                
             all_records.extend(data)
-            page += 1
-            time.sleep(0.6)  # Delay amigável para o servidor
+            time.sleep(0.6)
 
         if not all_records:
-            logger.warning("Nenhum dado real foi extraído. Verifique os logs acima.")
+            logger.warning("Nenhum dado extraído do CEIS.")
             return
 
-        # Estrutura os dados com o Polars
         df = pl.DataFrame(all_records)
-        logger.info(f"Sucesso! {df.height} registros reais carregados em memória.")
-
-        output_path = os.path.join(self.output_dir, "ceis_raw.parquet")
-        df.write_parquet(output_path)
-        logger.info(f"Camada Bronze persistida com dados reais em: {output_path}")
-
-if __name__ == "__main__":
-    pipeline = CeisIngestionPipeline()
-    pipeline.run(max_pages=3)\n\n
-========================================
-📄 ARQUIVO: src/pipelines/ingestion_contratos.py
-========================================
-import os
+        logger.info(f"{df.height} registros extraídos.")
+        storage.upload_or_fallback(df, self.BRONZE_PATH)
+        logger.info(f"Bronze CEIS persistido: {self.BRONZE_PATH}")\n
+=== ARQUIVO: /home/rogerio/Projetos/GOVBR/Monitor/src/pipelines/ingestion_contratos.py ===
+import time
 import requests
 import polars as pl
-from src.core.config import settings
+from datetime import datetime, timedelta
 from src.core.logging import setup_logging, logger
+from src.core.storage import storage
 
 setup_logging()
 
-class ContratosIngestionPipeline:
-    def __init__(self):
-        # Rota de consulta pública definitiva
-        self.base_url = "https://pncp.gov.br/api/consulta/v1/contratos"
-        self.output_dir = os.path.join(settings.LOCAL_DATA_DIR, "bronze")
-        os.makedirs(self.output_dir, exist_ok=True)
 
-    def fetch_contratos_por_data(self, data_alvo: str, pagina: int = 1) -> list:
-        """
-        Busca contratos publicados no PNCP em uma data específica.
-        Formato obrigatório aceito pela API: AAAAMMDD (Ex: '20260601')
-        """
+class ContratosIngestionPipeline:
+    BRONZE_PATH = "bronze/contratos_pncp_raw.parquet"
+
+    def __init__(self):
+        self.base_url = "https://pncp.gov.br/api/consulta/v1/contratos"
+        self.headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        }
+
+    def fetch_contratos_por_data(self, data_alvo: str, pagina: int = 1, tentativas: int = 2) -> list:
         params = {
-            "dataInicial": data_alvo,  # Sem hífens! Ex: 20260601
+            "dataInicial": data_alvo,
             "dataFinal": data_alvo,
             "pagina": pagina
         }
-        
-        try:
-            logger.info(f"Buscando lote de contratos no PNCP para {data_alvo} (Página {pagina})...")
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-            }
-            response = requests.get(self.base_url, params=params, headers=headers, timeout=30)
-            response.raise_for_status()
-            
-            result = response.json()
-            # O PNCP envelopa a lista de contratos dentro da chave 'data'
-            return result.get("data", [])
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Erro ao buscar contratos no PNCP: {e}")
-            return []
+        for tentativa in range(1, tentativas + 1):
+            try:
+                logger.info(f"Buscando contratos PNCP — {data_alvo} pagina {pagina} (tentativa {tentativa})...")
+                response = requests.get(
+                    self.base_url,
+                    params=params,
+                    headers=self.headers,
+                    timeout=60
+                )
+                response.raise_for_status()
+                return response.json().get("data", [])
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"Tentativa {tentativa} falhou: {e}")
+                if tentativa < tentativas:
+                    time.sleep(3 * tentativa)
 
-    def run(self, data_alvo: str = "20260601", max_paginas: int = 1):
-        logger.info("Iniciando extração de dados de contratos do PNCP...")
+        logger.error(f"Todas as tentativas falharam para {data_alvo} pagina {pagina}.")
+        return []
+
+    def run(self, dias: int = 7, max_paginas_por_dia: int = 5):
+        logger.info(f"Iniciando extracao PNCP — ultimos {dias} dias...")
         all_contratos = []
-        
-        for page in range(1, max_paginas + 1):
-            lote = self.fetch_contratos_por_data(data_alvo, pagina=page)
-            if not lote:
-                break
-            all_contratos.extend(lote)
-            
+        data_base = datetime.today()
+
+        for i in range(dias):
+            data_alvo = (data_base - timedelta(days=i)).strftime("%Y%m%d")
+            dia_com_dados = False
+
+            for pagina in range(1, max_paginas_por_dia + 1):
+                lote = self.fetch_contratos_por_data(data_alvo, pagina)
+                if not lote:
+                    break
+                all_contratos.extend(lote)
+                dia_com_dados = True
+                time.sleep(0.3)
+
+            if not dia_com_dados:
+                logger.warning(f"Sem dados para {data_alvo}, pulando.")
+
         if not all_contratos:
-            logger.warning(f"Nenhum contrato retornado para a data {data_alvo}.")
+            logger.warning("Nenhum contrato extraido do PNCP.")
             return
 
-        # Salva o arquivo bruto na Bronze com inferência de schema completa
-        # infer_schema_length=None evita quebra por tipos mistos (int vs str) na API
         df = pl.DataFrame(all_contratos, infer_schema_length=None)
-        output_path = os.path.join(self.output_dir, "contratos_pncp_raw.parquet")
-        df.write_parquet(output_path)
-        
-        logger.info(f"Sucesso! {df.height} contratos reais carregados na camada Bronze em: {output_path}")
+        logger.info(f"{df.height} contratos extraidos.")
+        storage.upload_or_fallback(df, self.BRONZE_PATH)
+        logger.info(f"Bronze Contratos persistido: {self.BRONZE_PATH}")
+
 
 if __name__ == "__main__":
-    pipeline = ContratosIngestionPipeline()
-    # Puxando o lote de contratos reais do dia 1º de Junho de 2026
-    pipeline.run(data_alvo="20260601", max_paginas=1)\n\n
-========================================
-📄 ARQUIVO: src/pipelines/__init__.py
-========================================
-\n\n
-========================================
-📄 ARQUIVO: src/pipelines/silver.py
-========================================
-import os
+    ContratosIngestionPipeline().run()\n
+=== ARQUIVO: /home/rogerio/Projetos/GOVBR/Monitor/src/pipelines/__init__.py ===
+\n
+=== ARQUIVO: /home/rogerio/Projetos/GOVBR/Monitor/src/pipelines/silver.py ===
 import polars as pl
-from src.core.config import settings
 from src.core.logging import setup_logging, logger
+from src.core.storage import storage
 
-# Inicializa o log para vermos o progresso no terminal
 setup_logging()
 
+BRONZE_PATH = "bronze/ceis_raw.parquet"
+SILVER_PATH = "silver/ceis_clean.parquet"
+
+
 class CeisSilverPipeline:
-    def __init__(self):
-        self.input_path = os.path.join(settings.LOCAL_DATA_DIR, "bronze", "ceis_raw.parquet")
-        self.output_dir = os.path.join(settings.LOCAL_DATA_DIR, "silver")
-        os.makedirs(self.output_dir, exist_ok=True)
 
     def run(self):
-        logger.info("Iniciando processamento da camada SILVER para o CEIS...")
-        
-        if not os.path.exists(self.input_path):
-            logger.error(f"Arquivo Bronze não encontrado em: {self.input_path}. Execute a ingestão primeiro.")
+        logger.info("Iniciando Silver CEIS...")
+
+        df_bronze = storage.download_parquet(BRONZE_PATH)
+        if df_bronze is None:
+            logger.error("Bronze CEIS não encontrado no R2. Execute a ingestão primeiro.")
             return
 
-        # 1. Leitura do Parquet bruto com LazyFrame
-        lf = pl.scan_parquet(self.input_path)
-
-        # 2. Transformações baseadas no Schema Real da v2
-        lf_clean = lf.with_columns([
-            # Extrai CPF ou CNPJ de dentro do objeto 'pessoa'
+        lf_clean = df_bronze.lazy().with_columns([
             pl.col("pessoa").struct.field("cpfFormatado").alias("cpf_raw"),
             pl.col("pessoa").struct.field("cnpjFormatado").alias("cnpj_raw"),
-            
-            # Extrai o Tipo de Pessoa (Física ou Jurídica)
             pl.col("pessoa").struct.field("tipo").alias("tipo_pessoa"),
-
-            # Converte datas de string ('DD/MM/AAAA') para o tipo Date real do Polars
             pl.col("dataInicioSancao").str.to_date("%d/%m/%Y", strict=False),
             pl.col("dataFimSancao").str.to_date("%d/%m/%Y", strict=False),
-            
-            # Extrai dados textuais das Structs e limpa strings
             pl.col("sancionado").struct.field("nome").str.to_uppercase().str.strip_chars().alias("nome_sancionado"),
             pl.col("tipoSancao").struct.field("descricaoResumida").str.to_uppercase().str.strip_chars().alias("tipo_sancao"),
             pl.col("orgaoSancionador").struct.field("nome").str.to_uppercase().str.strip_chars().alias("orgao_sancionador")
         ]).with_columns([
-            # Cria uma única coluna de documento limpo (se cnpj_raw for vazio, usa o cpf_raw)
             pl.coalesce([
                 pl.when(pl.col("cnpj_raw") != "").then(pl.col("cnpj_raw")).otherwise(None),
                 pl.when(pl.col("cpf_raw") != "").then(pl.col("cpf_raw")).otherwise(None)
             ]).str.replace_all(r"[\.\-\/\*]", "").alias("documento_limpo")
         ]).select([
-            # Seleção final limpa para a camada analítica
             pl.col("id").alias("id_sancao"),
             pl.col("documento_limpo"),
             pl.col("tipo_pessoa"),
@@ -366,168 +867,868 @@ class CeisSilverPipeline:
             pl.col("numeroProcesso").alias("numero_processo")
         ])
 
-        # 3. Coleta e persiste os dados limpos
         df_silver = lf_clean.collect()
-        
-        output_path = os.path.join(self.output_dir, "ceis_clean.parquet")
-        df_silver.write_parquet(output_path)
-        
-        logger.info(f"Camada SILVER processada com sucesso! Volume: {df_silver.height} linhas.")
-        logger.info(f"Arquivo persistido em: {output_path}")
+        storage.upload_or_fallback(df_silver, SILVER_PATH)
+        logger.info(f"Silver CEIS concluído — {df_silver.height} registros.")
+
 
 if __name__ == "__main__":
-    pipeline = CeisSilverPipeline()
-    pipeline.run()\n\n
-========================================
-📄 ARQUIVO: src/pipelines/gold_monitor.py
-========================================
-import os
+    CeisSilverPipeline().run()\n
+=== ARQUIVO: /home/rogerio/Projetos/GOVBR/Monitor/src/pipelines/ingestion_cnep.py ===
+import time
+import requests
 import polars as pl
 from src.core.config import settings
 from src.core.logging import setup_logging, logger
+from src.core.storage import storage
 
 setup_logging()
+
+
+class CnepIngestionPipeline:
+    BRONZE_PATH = "bronze/cnep_raw.parquet"
+
+    def __init__(self):
+        self.base_url = f"{settings.CGU_API_BASE_URL}/cnep"
+        api_key = settings.CGU_API_KEY.strip()
+        self.headers = {
+            "Accept": "application/json",
+            "chave-api-dados": api_key
+        }
+        key_preview = f"{api_key[:4]}...{api_key[-4:]}" if len(api_key) > 8 else "CHAVE_INVALIDA"
+        logger.info(f"CNEP Pipeline iniciado. Chave: {key_preview}")
+
+    def fetch_page(self, page: int) -> list:
+        params = {"pagina": page}
+        try:
+            response = requests.get(
+                self.base_url,
+                headers=self.headers,
+                params=params,
+                timeout=30
+            )
+            if response.status_code == 429:
+                logger.warning("Rate limit atingido. Aguardando 15 segundos...")
+                time.sleep(15)
+                return self.fetch_page(page)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Erro ao buscar pagina {page}: {e}")
+            return []
+
+    def run(self, max_pages: int = 15):
+        logger.info("Iniciando extracao CNEP...")
+        all_records = []
+        for page in range(1, max_pages + 1):
+            logger.info(f"Baixando pagina {page}/{max_pages}...")
+            data = self.fetch_page(page)
+            if not data:
+                logger.info("Fim dos dados.")
+                break
+            all_records.extend(data)
+            time.sleep(0.6)
+
+        if not all_records:
+            logger.warning("Nenhum dado extraido do CNEP.")
+            return
+
+        df = pl.DataFrame(all_records)
+        logger.info(f"{df.height} registros extraidos.")
+        storage.upload_or_fallback(df, self.BRONZE_PATH)
+        logger.info(f"Bronze CNEP persistido: {self.BRONZE_PATH}")
+
+
+if __name__ == "__main__":
+    CnepIngestionPipeline().run()\n
+=== ARQUIVO: /home/rogerio/Projetos/GOVBR/Monitor/src/pipelines/silver_cnep.py ===
+import polars as pl
+from datetime import date
+from src.core.logging import setup_logging, logger
+from src.core.storage import storage
+
+setup_logging()
+
+BRONZE_PATH = "bronze/cnep_raw.parquet"
+SILVER_PATH = "silver/cnep_clean.parquet"
+
+
+class CnepSilverPipeline:
+
+    def run(self):
+        logger.info("Iniciando Silver CNEP...")
+
+        df_bronze = storage.download_parquet(BRONZE_PATH)
+        if df_bronze is None:
+            logger.error("Bronze CNEP não encontrado no R2. Execute a ingestão primeiro.")
+            return
+
+        today = date.today()
+
+        df_silver = df_bronze.lazy().with_columns([
+            # Extrai CPF ou CNPJ
+            pl.col("pessoa").struct.field("cpfFormatado").alias("cpf_raw"),
+            pl.col("pessoa").struct.field("cnpjFormatado").alias("cnpj_raw"),
+            pl.col("pessoa").struct.field("tipo").alias("tipo_pessoa"),
+
+            # Datas
+            pl.col("dataInicioSancao").str.to_date("%d/%m/%Y", strict=False),
+            pl.col("dataFimSancao").str.to_date("%d/%m/%Y", strict=False),
+            pl.col("dataTransitadoJulgado").str.to_date("%d/%m/%Y", strict=False),
+
+            # Strings normalizadas
+            pl.col("sancionado").struct.field("nome").str.to_uppercase().str.strip_chars().alias("nome_sancionado"),
+            pl.col("tipoSancao").struct.field("descricaoResumida").str.to_uppercase().str.strip_chars().alias("tipo_sancao"),
+            pl.col("orgaoSancionador").struct.field("nome").str.to_uppercase().str.strip_chars().alias("orgao_sancionador"),
+            pl.col("orgaoSancionador").struct.field("esfera").str.to_uppercase().str.strip_chars().alias("esfera_sancionador"),
+
+            # Valor da multa — limpa e converte para float
+            pl.col("valorMulta")
+                .str.replace_all(r"[R\$\s\.]", "")
+                .str.replace(",", ".")
+                .cast(pl.Float64, strict=False)
+                .alias("valor_multa"),
+
+        ]).with_columns([
+            # Documento unificado limpo
+            pl.coalesce([
+                pl.when(pl.col("cnpj_raw") != "").then(pl.col("cnpj_raw")).otherwise(None),
+                pl.when(pl.col("cpf_raw") != "").then(pl.col("cpf_raw")).otherwise(None),
+            ]).str.replace_all(r"[\.\-\/\*]", "").alias("documento_limpo"),
+
+            # Status da punição
+            pl.when(
+                (pl.col("dataInicioSancao") <= today) &
+                (
+                    (pl.col("dataFimSancao").is_null()) |
+                    (pl.col("dataFimSancao") >= today)
+                )
+            )
+            .then(pl.lit("ATIVA"))
+            .otherwise(pl.lit("EXPIRADA"))
+            .alias("status_punicao"),
+
+        ]).select([
+            pl.col("id").alias("id_punicao"),
+            pl.col("documento_limpo"),
+            pl.col("tipo_pessoa"),
+            pl.col("nome_sancionado").alias("nome_empresa_ou_pessoa"),
+            pl.col("tipo_sancao"),
+            pl.col("dataInicioSancao").alias("data_inicio"),
+            pl.col("dataFimSancao").alias("data_fim"),
+            pl.col("dataTransitadoJulgado").alias("data_transito_julgado"),
+            pl.col("orgao_sancionador"),
+            pl.col("esfera_sancionador"),
+            pl.col("valor_multa"),
+            pl.col("status_punicao"),
+            pl.col("numeroProcesso").alias("numero_processo"),
+        ]).collect()
+
+        storage.upload_or_fallback(df_silver, SILVER_PATH)
+        logger.info(f"Silver CNEP concluido — {df_silver.height} registros.")
+        ativas = df_silver.filter(pl.col("status_punicao") == "ATIVA").height
+        logger.info(f"Punicoes ativas: {ativas} | Expiradas: {df_silver.height - ativas}")
+
+
+if __name__ == "__main__":
+    CnepSilverPipeline().run()\n
+=== ARQUIVO: /home/rogerio/Projetos/GOVBR/Monitor/src/pipelines/gold_monitor.py ===
+import polars as pl
+from datetime import date
+from src.core.logging import setup_logging, logger
+from src.core.storage import storage
+
+setup_logging()
+
+SILVER_CEIS_PATH = "silver/ceis_clean.parquet"
+SILVER_CNEP_PATH = "silver/cnep_clean.parquet"
+SILVER_CONTRATOS_PATH = "silver/contratos_pncp_clean.parquet"
+SILVER_CNPJ_PATH = "silver/cnpj_empresas_clean.parquet"
+SILVER_SOCIOS_PATH = "silver/cnpj_socios_clean.parquet"
+GOLD_ALERTAS_PATH = "gold/analytics_alertas_corrupcao.parquet"
+
 
 class MonitorGoldPipeline:
-    def __init__(self):
-        self.ceis_path = os.path.join(settings.LOCAL_DATA_DIR, "silver", "ceis_clean.parquet")
-        self.contratos_path = os.path.join(settings.LOCAL_DATA_DIR, "silver", "contratos_pncp_clean.parquet")
-        self.output_dir = os.path.join(settings.LOCAL_DATA_DIR, "gold")
-        os.makedirs(self.output_dir, exist_ok=True)
 
-    def run(self):
-        logger.info("🕵️‍♂️ Iniciando cruzamento de dados na camada GOLD para detecção de irregularidades...")
-        
-        if not os.path.exists(self.ceis_path) or not os.path.exists(self.contratos_path):
-            logger.error("Arquivos da camada Silver necessários não foram encontrados. Certifique-se de rodar os dois pipelines.")
-            return
+    def calcular_score_risco(self, df: pl.DataFrame) -> pl.DataFrame:
+        return df.with_columns([
+            # Base pelo nível de classificação
+            pl.when(pl.col("classificacao_risco").str.contains("GRAVISSIMO"))
+                .then(pl.lit(60))
+            .when(pl.col("classificacao_risco").str.contains("CRITICO"))
+                .then(pl.lit(40))
+            .otherwise(pl.lit(10))
+            .alias("score_base"),
 
-        # 1. Escaneia os dois Parquets usando LazyFrames (Performance Máxima)
-        lf_ceis = pl.scan_parquet(self.ceis_path)
-        lf_contratos = pl.scan_parquet(self.contratos_path)
-
-        # 2. Executa o JOIN via Chave de Documento (CPF/CNPJ)
-        # Traz apenas os contratos cujos fornecedores possuem alguma sanção ativa/histórica no CEIS
-        lf_matches = lf_contratos.join(
-            lf_ceis,
-            left_on="documento_fornecedor_limpo",
-            right_on="documento_limpo",
-            how="inner"
-        )
-
-        # 3. Aplica a Regra de Negócio de Auditoria (Verificação de Vigência)
-        lf_alerts = lf_matches.with_columns([
+            # Empresa jovem — menos de 1 ano na data do contrato
             pl.when(
-                (pl.col("data_assinatura") >= pl.col("data_inicio")) & 
-                ((pl.col("data_fim").is_null()) | (pl.col("data_assinatura") <= pl.col("data_fim")))
+                (pl.col("data_inicio_atividade").is_not_null()) &
+                (
+                    (pl.col("data_assinatura") - pl.col("data_inicio_atividade"))
+                    .dt.total_days() < 365
+                )
             )
-            .then(pl.lit("CRÍTICO: CONTRATAÇÃO DE EMPRESA IMPEDIDA"))
-            .otherwise(pl.lit("HISTÓRICO: FORNECEDOR COM SANÇÕES CORRELATAS"))
-            .alias("classificacao_risco")
+            .then(pl.lit(20))
+            .otherwise(pl.lit(0))
+            .alias("score_empresa_jovem"),
+
+            # Capital social baixo
+            pl.when(
+                (pl.col("capital_social").is_not_null()) &
+                (pl.col("capital_social") < 100_000)
+            )
+            .then(pl.lit(10))
+            .otherwise(pl.lit(0))
+            .alias("score_capital_baixo"),
+
+            # Situação cadastral irregular
+            pl.when(
+                (pl.col("situacao_cadastral").is_not_null()) &
+                (~pl.col("situacao_cadastral").str.contains("ATIVA"))
+            )
+            .then(pl.lit(30))
+            .otherwise(pl.lit(0))
+            .alias("score_situacao_irregular"),
+
+            # Valor do contrato alto
+            pl.when(pl.col("valor_global_contrato") > 1_000_000)
+                .then(pl.lit(15))
+            .when(pl.col("valor_global_contrato") > 100_000)
+                .then(pl.lit(10))
+            .otherwise(pl.lit(0))
+            .alias("score_valor_contrato"),
+
+        ]).with_columns([
+            (
+                pl.col("score_base") +
+                pl.col("score_empresa_jovem") +
+                pl.col("score_capital_baixo") +
+                pl.col("score_situacao_irregular") +
+                pl.col("score_valor_contrato")
+            ).alias("score_risco_total"),
+
+        ]).with_columns([
+            pl.when(pl.col("score_risco_total") >= 80)
+                .then(pl.lit("MAXIMO"))
+            .when(pl.col("score_risco_total") >= 60)
+                .then(pl.lit("ALTO"))
+            .when(pl.col("score_risco_total") >= 40)
+                .then(pl.lit("MEDIO"))
+            .otherwise(pl.lit("BAIXO"))
+            .alias("nivel_risco"),
+
+        ]).drop([
+            "score_base",
+            "score_empresa_jovem",
+            "score_capital_baixo",
+            "score_situacao_irregular",
+            "score_valor_contrato",
         ])
 
-        # 4. Computa o plano de execução e coleta o DataFrame
-        df_alerts = lf_alerts.collect()
+    def run(self):
+        logger.info("Iniciando cruzamento Gold — CEIS + CNEP x Contratos...")
 
-        # 5. Salva a tabela de Alertas Gerados na Gold
-        output_path = os.path.join(self.output_dir, "analytics_alertas_corrupcao.parquet")
-        df_alerts.write_parquet(output_path)
+        df_ceis = storage.download_parquet(SILVER_CEIS_PATH)
+        df_cnep = storage.download_parquet(SILVER_CNEP_PATH)
+        df_contratos = storage.download_parquet(SILVER_CONTRATOS_PATH)
 
-        logger.info(f"Processamento concluído!")
-        logger.info(f"📊 Total de matches encontrados entre Contratos e Empresas Sancionadas: {df_alerts.height}")
-        
-        # Se houver alertas críticos, exibe o sumário no log
-        if df_alerts.height > 0:
-            criticos = df_alerts.filter(pl.col("classificacao_risco").str.contains("CRÍTICO")).height
-            logger.warning(f"🚨 ALERTA: Detectados {criticos} contratos com indícios de irregularidade grave (empresa impedida)!")
-        else:
-            logger.info("✨ Nenhum alerta crítico gerado para esta amostragem de dados.")
+        if df_ceis is None or df_contratos is None:
+            logger.error("Silver CEIS ou Contratos nao encontrados no R2.")
+            return
+
+        if df_cnep is None:
+            logger.warning("Silver CNEP nao encontrado — prosseguindo sem CNEP.")
+
+        # --- Cruzamento CEIS x Contratos ---
+        df_ceis_matches = (
+            df_contratos.lazy()
+            .join(
+                df_ceis.lazy(),
+                left_on="documento_fornecedor_limpo",
+                right_on="documento_limpo",
+                how="inner"
+            )
+            .with_columns([
+                pl.when(
+                    (pl.col("data_assinatura") >= pl.col("data_inicio")) &
+                    (
+                        (pl.col("data_fim").is_null()) |
+                        (pl.col("data_assinatura") <= pl.col("data_fim"))
+                    )
+                )
+                .then(pl.lit("CRITICO: CONTRATACAO DE EMPRESA IMPEDIDA"))
+                .otherwise(pl.lit("HISTORICO: FORNECEDOR COM SANCOES CORRELATAS"))
+                .alias("classificacao_risco"),
+                pl.lit("CEIS").alias("fonte_alerta"),
+                pl.lit(None).cast(pl.Float64).alias("valor_multa"),
+            ])
+            .collect()
+        )
+
+        # --- Cruzamento CNEP x Contratos ---
+        df_cnep_matches = pl.DataFrame()
+        if df_cnep is not None:
+            df_cnep_matches = (
+                df_contratos.lazy()
+                .join(
+                    df_cnep.lazy(),
+                    left_on="documento_fornecedor_limpo",
+                    right_on="documento_limpo",
+                    how="inner"
+                )
+                .with_columns([
+                    pl.when(
+                        (pl.col("data_assinatura") >= pl.col("data_inicio")) &
+                        (
+                            (pl.col("data_fim").is_null()) |
+                            (pl.col("data_assinatura") <= pl.col("data_fim"))
+                        )
+                    )
+                    .then(pl.lit("GRAVISSIMO: EMPRESA PUNIDA POR CORRUPCAO CONTRATANDO"))
+                    .otherwise(pl.lit("HISTORICO: FORNECEDOR COM PUNICOES CORRELATAS"))
+                    .alias("classificacao_risco"),
+                    pl.lit("CNEP").alias("fonte_alerta"),
+                    pl.col("valor_multa"),
+                ])
+                .collect()
+            )
+
+        # --- Consolida alertas ---
+        colunas_base = [
+            "id_contrato_pncp",
+            "documento_fornecedor_limpo",
+            "nome_fornecedor",
+            "nome_orgao_comprador",
+            "valor_global_contrato",
+            "data_assinatura",
+            "nome_empresa_ou_pessoa",
+            "tipo_sancao",
+            "data_inicio",
+            "data_fim",
+            "orgao_sancionador",
+            "numero_processo",
+            "classificacao_risco",
+            "fonte_alerta",
+            "valor_multa",
+        ]
+
+        frames = [df_ceis_matches]
+        if df_cnep_matches.height > 0:
+            frames.append(df_cnep_matches)
+
+        df_alerts = (
+            pl.concat([f.select(colunas_base) for f in frames])
+            .sort("classificacao_risco")
+        )
+
+        # --- Enriquece com dados do CNPJ ---
+        df_empresas = storage.download_parquet(SILVER_CNPJ_PATH)
+        if df_empresas is not None:
+            df_alerts = df_alerts.join(
+                df_empresas.select([
+                    "documento_limpo",
+                    "situacao_cadastral",
+                    "data_inicio_atividade",
+                    "capital_social",
+                    "porte",
+                    "municipio",
+                    "uf",
+                ]),
+                left_on="documento_fornecedor_limpo",
+                right_on="documento_limpo",
+                how="left"
+            )
+            logger.info("Alertas enriquecidos com dados do CNPJ.")
+
+        # --- Enriquece com socios ---
+        df_socios = storage.download_parquet(SILVER_SOCIOS_PATH)
+        if df_socios is not None:
+            df_socios_agg = (
+                df_socios
+                .group_by("documento_empresa")
+                .agg(
+                    pl.col("nome_socio").str.join(" | ").alias("socios")
+                )
+            )
+            df_alerts = df_alerts.join(
+                df_socios_agg,
+                left_on="documento_fornecedor_limpo",
+                right_on="documento_empresa",
+                how="left"
+            )
+            logger.info("Alertas enriquecidos com socios.")
+
+        # --- Score de risco ---
+        df_alerts = self.calcular_score_risco(df_alerts)
+        logger.info("Score de risco calculado.")
+
+        storage.upload_or_fallback(df_alerts, GOLD_ALERTAS_PATH)
+
+        # --- Sumario ---
+        total = df_alerts.height
+        gravissimos = df_alerts.filter(pl.col("classificacao_risco").str.contains("GRAVISSIMO")).height
+        criticos = df_alerts.filter(pl.col("classificacao_risco").str.contains("CRITICO")).height
+        historicos = df_alerts.filter(pl.col("classificacao_risco").str.contains("HISTORICO")).height
+
+        logger.info(f"Gold Monitor concluido — {total} alertas gerados.")
+        logger.info(f"  GRAVISSIMO : {gravissimos}")
+        logger.info(f"  CRITICO    : {criticos}")
+        logger.info(f"  HISTORICO  : {historicos}")
+
+        if gravissimos > 0:
+            logger.warning(f"ALERTA MAXIMO: {gravissimos} contratos com empresas punidas por corrupcao!")
+        if criticos > 0:
+            logger.warning(f"ALERTA: {criticos} contratos com empresas impedidas!")
+
+        logger.info("--- RANKING DE RISCO ---")
+        for row in df_alerts.sort("score_risco_total", descending=True).iter_rows(named=True):
+            logger.info(
+                f"{row['nome_fornecedor']} | "
+                f"Score: {row['score_risco_total']} | "
+                f"Nivel: {row['nivel_risco']} | "
+                f"{row['classificacao_risco']}"
+            )
+
 
 if __name__ == "__main__":
-    pipeline = MonitorGoldPipeline()
-    pipeline.run()\n\n
-========================================
-📄 ARQUIVO: src/pipelines/gold.py
-========================================
-import os
-from datetime import date
+    MonitorGoldPipeline().run()\n
+=== ARQUIVO: /home/rogerio/Projetos/GOVBR/Monitor/src/pipelines/gold_testa_ferro.py ===
 import polars as pl
-from src.core.config import settings
+from datetime import date
 from src.core.logging import setup_logging, logger
+from src.core.storage import storage
 
 setup_logging()
 
-class CeisGoldPipeline:
-    def __init__(self):
-        self.input_path = os.path.join(settings.LOCAL_DATA_DIR, "silver", "ceis_clean.parquet")
-        self.output_dir = os.path.join(settings.LOCAL_DATA_DIR, "gold")
-        os.makedirs(self.output_dir, exist_ok=True)
-        
-        # Define a data atual de referência do sistema (2026)
-        self.today = date(2026, 6, 9)
+SILVER_SOCIOS_PATH = "silver/cnpj_socios_clean.parquet"
+SILVER_CEIS_PATH = "silver/ceis_clean.parquet"
+SILVER_CONTRATOS_PATH = "silver/contratos_pncp_clean.parquet"
+GOLD_TESTA_FERRO_PATH = "gold/analytics_testa_ferro.parquet"
+
+
+class TestaFerroGoldPipeline:
 
     def run(self):
-        logger.info("Iniciando processamento da camada GOLD (Métricas Analíticas)...")
-        
-        if not os.path.exists(self.input_path):
-            logger.error(f"Arquivo Silver não encontrado em: {self.input_path}.")
+        logger.info("Iniciando deteccao de testa de ferro...")
+
+        df_socios = storage.download_parquet(SILVER_SOCIOS_PATH)
+        df_ceis = storage.download_parquet(SILVER_CEIS_PATH)
+        df_contratos = storage.download_parquet(SILVER_CONTRATOS_PATH)
+
+        if any(df is None for df in [df_socios, df_ceis, df_contratos]):
+            logger.error("Dados necessarios nao encontrados no R2.")
             return
 
-        # 1. Carrega os dados da Silver usando LazyFrame
-        lf = pl.scan_parquet(self.input_path)
+        today = date.today()
 
-        # 2. Adiciona Regra de Negócio: Flag de Status Ativo
-        # Uma sanção está ATIVA se a data atual está entre o início e o fim da sanção,
-        # ou se a data de fim for nula (indeterminada).
-        lf_enriched = lf.with_columns([
+        # --- Passo 1 ---
+        # Identifica sócios de empresas sancionadas no CEIS
+        socios_de_empresas_ceis = (
+            df_ceis.lazy()
+            .filter(pl.col("tipo_pessoa") == "J")
+            .with_columns([
+                pl.when(
+                    (pl.col("data_inicio") <= today) &
+                    (
+                        (pl.col("data_fim").is_null()) |
+                        (pl.col("data_fim") >= today)
+                    )
+                )
+                .then(pl.lit("ATIVA"))
+                .otherwise(pl.lit("EXPIRADA"))
+                .alias("status_sancao")
+            ])
+            .select([
+                pl.col("documento_limpo").alias("cnpj_empresa_ceis"),
+                pl.col("nome_empresa_ou_pessoa").alias("nome_empresa_ceis"),
+                pl.col("tipo_sancao"),
+                pl.col("data_inicio").alias("data_inicio_sancao"),
+                pl.col("data_fim").alias("data_fim_sancao"),
+                pl.col("status_sancao"),
+            ])
+            .join(
+                df_socios.lazy().select([
+                    pl.col("documento_empresa"),
+                    pl.col("nome_socio"),
+                    pl.col("documento_socio"),
+                    pl.col("data_entrada_sociedade"),
+                ]),
+                left_on="cnpj_empresa_ceis",
+                right_on="documento_empresa",
+                how="inner"
+            )
+            .collect()
+        )
+
+        if socios_de_empresas_ceis.height == 0:
+            logger.info("Nenhum socio de empresa sancionada encontrado.")
+            return
+
+        logger.info(f"Socios de empresas no CEIS identificados: {socios_de_empresas_ceis.height}")
+
+        # --- Passo 2 ---
+        # Verifica se esses sócios aparecem em empresas contratando com o governo
+        df_socios_em_contratos = (
+            df_socios.lazy()
+            .join(
+                df_contratos.lazy().select([
+                    pl.col("documento_fornecedor_limpo"),
+                    pl.col("nome_fornecedor"),
+                    pl.col("nome_orgao_comprador"),
+                    pl.col("valor_global_contrato"),
+                    pl.col("data_assinatura"),
+                    pl.col("id_contrato_pncp"),
+                ]),
+                left_on="documento_empresa",
+                right_on="documento_fornecedor_limpo",
+                how="inner"
+            )
+            .collect()
+        )
+
+        # --- Passo 3 ---
+        # Cruza — mesmo sócio em empresa do CEIS e em empresa contratando
+        df_testa_ferro = (
+            socios_de_empresas_ceis.lazy()
+            .join(
+                df_socios_em_contratos.lazy(),
+                on="documento_socio",
+                how="inner",
+                suffix="_contrato"
+            )
+            .filter(
+                pl.col("cnpj_empresa_ceis") != pl.col("documento_empresa")
+            )
+            .select([
+                pl.col("documento_socio"),
+                pl.col("nome_socio"),
+                pl.col("cnpj_empresa_ceis"),
+                pl.col("nome_empresa_ceis"),
+                pl.col("tipo_sancao"),
+                pl.col("data_inicio_sancao"),
+                pl.col("data_fim_sancao"),
+                pl.col("status_sancao"),
+                pl.col("documento_empresa").alias("cnpj_empresa_contrato"),
+                pl.col("nome_fornecedor").alias("nome_empresa_contrato"),
+                pl.col("nome_orgao_comprador"),
+                pl.col("valor_global_contrato"),
+                pl.col("data_assinatura"),
+                pl.col("id_contrato_pncp"),
+                pl.lit("TESTA DE FERRO: SOCIO DE EMPRESA IMPEDIDA CONTRATANDO VIA OUTRA EMPRESA")
+                    .alias("classificacao_risco"),
+            ])
+            .collect()
+        )
+
+        if df_testa_ferro.height == 0:
+            logger.info("Nenhum padrao de testa de ferro detectado nesta amostragem.")
+            storage.upload_or_fallback(pl.DataFrame(), GOLD_TESTA_FERRO_PATH)
+            return
+
+        storage.upload_or_fallback(df_testa_ferro, GOLD_TESTA_FERRO_PATH)
+
+        logger.info(f"PADROES DE TESTA DE FERRO DETECTADOS: {df_testa_ferro.height}")
+        for row in df_testa_ferro.iter_rows(named=True):
+            logger.warning(
+                f"SOCIO: {row['nome_socio']} | "
+                f"Empresa impedida: {row['nome_empresa_ceis']} | "
+                f"Contratando via: {row['nome_empresa_contrato']} | "
+                f"Orgao: {row['nome_orgao_comprador']} | "
+                f"Valor: R$ {row['valor_global_contrato']:,.2f}"
+            )
+
+
+if __name__ == "__main__":
+    TestaFerroGoldPipeline().run()\n
+=== ARQUIVO: /home/rogerio/Projetos/GOVBR/Monitor/src/pipelines/ingestion_tse.py ===
+import io
+import zipfile
+import requests
+import polars as pl
+from src.core.logging import setup_logging, logger
+from src.core.storage import storage
+
+setup_logging()
+
+TSE_URL = "https://cdn.tse.jus.br/estatistica/sead/odsele/prestacao_contas/prestacao_de_contas_eleitorais_candidatos_2024.zip"
+BRONZE_PATH = "bronze/tse_receitas_raw.parquet"
+
+
+class TseIngestionPipeline:
+
+    def extrair_cnpjs_alvo(self) -> set[str]:
+        cnpjs = set()
+
+        df_alertas = storage.download_parquet("gold/analytics_alertas_corrupcao.parquet")
+        if df_alertas is not None:
+            cnpjs.update(
+                df_alertas["documento_fornecedor_limpo"]
+                .drop_nulls().unique().to_list()
+            )
+
+        df_contratos = storage.download_parquet("silver/contratos_pncp_clean.parquet")
+        if df_contratos is not None:
+            cnpjs.update(
+                df_contratos["documento_fornecedor_limpo"]
+                .drop_nulls().unique().to_list()
+            )
+
+        cnpjs_validos = {c for c in cnpjs if c.isdigit() and len(c) == 14}
+        logger.info(f"CNPJs alvo para cruzamento TSE: {len(cnpjs_validos)}")
+        return cnpjs_validos
+
+    def _download_com_progresso(self, url: str) -> bytes | None:
+        try:
+            response = requests.get(url, timeout=120, stream=True)
+            response.raise_for_status()
+
+            total = int(response.headers.get("content-length", 0))
+            baixado = 0
+            chunks = []
+            ultimo_log = 0
+
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    chunks.append(chunk)
+                    baixado += len(chunk)
+
+                    if total:
+                        pct = (baixado / total) * 100
+                        # Loga a cada 10%
+                        if int(pct) // 10 > ultimo_log // 10:
+                            logger.info(
+                                f"Download: {pct:.1f}% "
+                                f"({baixado / 1024 / 1024:.1f}MB "
+                                f"/ {total / 1024 / 1024:.1f}MB)"
+                            )
+                            ultimo_log = int(pct)
+                    else:
+                        # Sem content-length — loga a cada 10MB
+                        mb = baixado / 1024 / 1024
+                        if int(mb) % 10 == 0 and int(mb) != int((baixado - 1024 * 1024) / 1024 / 1024):
+                            logger.info(f"Download: {mb:.1f}MB baixados...")
+
+            logger.info(f"Download concluido — {baixado / 1024 / 1024:.1f}MB total.")
+            return b"".join(chunks)
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Erro ao baixar arquivo TSE: {e}")
+            return None
+
+    def run(self):
+        logger.info("Iniciando ingestao TSE — receitas eleitorais 2024...")
+
+        cnpjs_alvo = self.extrair_cnpjs_alvo()
+        if not cnpjs_alvo:
+            logger.warning("Nenhum CNPJ alvo encontrado.")
+            return
+
+        logger.info(f"Baixando arquivo TSE...")
+        content = self._download_com_progresso(TSE_URL)
+        if content is None:
+            return
+
+        logger.info("Descompactando...")
+        try:
+            with zipfile.ZipFile(io.BytesIO(content)) as zf:
+                arquivos = zf.namelist()
+                logger.info(f"Arquivos no zip: {arquivos}")
+
+                csv_files = [f for f in arquivos if "receita" in f.lower() and f.endswith(".csv")]
+                if not csv_files:
+                    csv_files = [f for f in arquivos if f.endswith(".csv")]
+
+                if not csv_files:
+                    logger.error("Nenhum CSV encontrado no arquivo ZIP.")
+                    return
+
+                logger.info(f"Processando: {csv_files[0]}")
+
+                with zf.open(csv_files[0]) as f:
+                    df_raw = pl.read_csv(
+                        f,
+                        encoding="latin1",
+                        separator=";",
+                        infer_schema_length=0,
+                        ignore_errors=True,
+                    )
+
+        except Exception as e:
+            logger.error(f"Erro ao processar ZIP: {e}")
+            return
+
+        logger.info(f"Total de registros TSE: {df_raw.height}")
+        logger.info(f"Colunas disponiveis: {df_raw.columns}")
+
+        cnpj_cols = [c for c in df_raw.columns if "cnpj" in c.lower() or "cpf" in c.lower()]
+        logger.info(f"Colunas de documento encontradas: {cnpj_cols}")
+
+        if not cnpj_cols:
+            logger.warning("Nenhuma coluna de CNPJ — salvando amostra de 10000 registros.")
+            df_filtrado = df_raw.head(10000)
+        else:
+            col_cnpj = cnpj_cols[0]
+            logger.info(f"Filtrando por coluna: {col_cnpj}")
+
+            df_filtrado = df_raw.filter(
+                pl.col(col_cnpj)
+                .str.replace_all(r"[\.\-\/]", "")
+                .is_in(cnpjs_alvo)
+            )
+            logger.info(f"Registros filtrados: {df_filtrado.height}")
+
+            if df_filtrado.height == 0:
+                logger.warning("Nenhum match — salvando amostra de 5000 registros para analise do schema.")
+                df_filtrado = df_raw.head(5000)
+
+        storage.upload_or_fallback(df_filtrado, BRONZE_PATH)
+        logger.info(f"Bronze TSE persistido: {BRONZE_PATH}")
+
+
+if __name__ == "__main__":
+    TseIngestionPipeline().run()\n
+=== ARQUIVO: /home/rogerio/Projetos/GOVBR/Monitor/src/pipelines/ingestion_cnpj.py ===
+import time
+import requests
+import polars as pl
+from src.core.logging import setup_logging, logger
+from src.core.storage import storage
+
+setup_logging()
+
+
+class CnpjIngestionPipeline:
+    BRONZE_PATH = "bronze/cnpj_empresas_raw.parquet"
+    BASE_URL = "https://brasilapi.com.br/api/cnpj/v1"
+
+    def fetch_cnpj(self, cnpj: str) -> dict | None:
+        """Busca dados de um CNPJ na BrasilAPI."""
+        try:
+            response = requests.get(
+                f"{self.BASE_URL}/{cnpj}",
+                timeout=15
+            )
+            if response.status_code == 404:
+                logger.warning(f"CNPJ nao encontrado: {cnpj}")
+                return None
+            if response.status_code == 429:
+                logger.warning("Rate limit atingido. Aguardando 30 segundos...")
+                time.sleep(30)
+                return self.fetch_cnpj(cnpj)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Erro ao buscar CNPJ {cnpj}: {e}")
+            return None
+
+    def extrair_cnpjs_alvo(self) -> list[str]:
+        """Extrai CNPJs apenas dos alertas gerados — foco nos suspeitos."""
+        cnpjs = set()
+
+        df_alertas = storage.download_parquet("gold/analytics_alertas_corrupcao.parquet")
+        if df_alertas is not None:
+                    cnpjs.update(
+                    df_alertas["documento_fornecedor_limpo"]
+                .drop_nulls()
+                .unique()
+                .to_list()
+                            )
+        logger.info(f"CNPJs alvo dos alertas: {len(cnpjs)}")
+
+        cnpjs_validos = [c for c in cnpjs if c.isdigit() and len(c) == 14]
+        logger.info(f"Total CNPJs para consulta: {len(cnpjs_validos)}")
+        return cnpjs_validos
+
+    def run(self):
+        logger.info("Iniciando ingestao CNPJ via BrasilAPI...")
+
+        cnpjs_alvo = self.extrair_cnpjs_alvo()
+        if not cnpjs_alvo:
+            logger.warning("Nenhum CNPJ alvo encontrado.")
+            return
+
+        resultados = []
+        total = len(cnpjs_alvo)
+
+        for i, cnpj in enumerate(cnpjs_alvo, 1):
+            logger.info(f"Consultando CNPJ {i}/{total}: {cnpj}")
+            dados = self.fetch_cnpj(cnpj)
+            if dados:
+                resultados.append(dados)
+            time.sleep(0.5)  # respeita rate limit da BrasilAPI
+
+        if not resultados:
+            logger.warning("Nenhum dado retornado pela BrasilAPI.")
+            return
+
+        df = pl.DataFrame(resultados, infer_schema_length=None)
+        logger.info(f"{df.height} empresas consultadas.")
+        storage.upload_or_fallback(df, self.BRONZE_PATH)
+        logger.info(f"Bronze CNPJ persistido: {self.BRONZE_PATH}")
+
+
+if __name__ == "__main__":
+    CnpjIngestionPipeline().run()\n
+=== ARQUIVO: /home/rogerio/Projetos/GOVBR/Monitor/src/pipelines/gold.py ===
+from datetime import date
+import polars as pl
+from src.core.logging import setup_logging, logger
+from src.core.storage import storage
+
+setup_logging()
+
+SILVER_PATH = "silver/ceis_clean.parquet"
+GOLD_FACT_PATH = "gold/fact_ceis_sancoes.parquet"
+GOLD_ORGAOS_PATH = "gold/dm_sancoes_por_orgao.parquet"
+
+
+class CeisGoldPipeline:
+
+    def __init__(self):
+        self.today = date.today()
+
+    def run(self):
+        logger.info("Iniciando Gold CEIS...")
+
+        df_silver = storage.download_parquet(SILVER_PATH)
+        if df_silver is None:
+            logger.error("Silver CEIS não encontrado no R2.")
+            return
+
+        df_gold = df_silver.lazy().with_columns([
             pl.when(
-                (pl.col("data_inicio") <= self.today) & 
+                (pl.col("data_inicio") <= self.today) &
                 ((pl.col("data_fim").is_null()) | (pl.col("data_fim") >= self.today))
             )
             .then(pl.lit("ATIVA"))
             .otherwise(pl.lit("EXPIRADA"))
             .alias("status_sancao")
-        ])
+        ]).collect()
 
-        # 3. Executa o plano e coleta a tabela principal enriquecida
-        df_gold_principal = lf_enriched.collect()
-        
-        # Salva o arquivo principal da Gold
-        main_output = os.path.join(self.output_dir, "fact_ceis_sancoes.parquet")
-        df_gold_principal.write_parquet(main_output)
-        logger.info(f"Fato principal persistida na Gold: {main_output}")
+        storage.upload_or_fallback(df_gold, GOLD_FACT_PATH)
 
-        # 4. Cria agregações analíticas (Data Marts Rápidos) para o Dashboard
-        
-        # Agregação A: Resumo por Órgão Sancionador
         df_orgaos = (
-            df_gold_principal.group_by("orgao_sancionador")
+            df_gold.group_by("orgao_sancionador")
             .agg([
                 pl.len().alias("total_sancoes"),
-                pl.col("status_sancao").filter(pl.col("status_sancao") == "ATIVA").count().alias("sancoes_ativas")
+                pl.col("status_sancao")
+                    .filter(pl.col("status_sancao") == "ATIVA")
+                    .count()
+                    .alias("sancoes_ativas")
             ])
             .sort("total_sancoes", descending=True)
         )
-        orgaos_output = os.path.join(self.output_dir, "dm_sancoes_por_orgao.parquet")
-        df_orgaos.write_parquet(orgaos_output)
 
-        # Agregação B: Visão Geral de Métricas (KPIs Rápidos)
-        total_registros = df_gold_principal.height
-        ativas = df_gold_principal.filter(pl.col("status_sancao") == "ATIVA").height
-        expiradas = total_registros - ativas
-        
-        logger.info("--- METRICAS CONSOLIDADAS (GOLD) ---")
-        logger.info(f"Total de Sanções Históricas Analisadas: {total_registros}")
-        logger.info(f"Sanções Ativas Vigentes: {ativas}")
-        logger.info(f"Sanções Já Expiradas: {expiradas}")
-        logger.info("Camada GOLD finalizada com sucesso!")
+        storage.upload_or_fallback(df_orgaos, GOLD_ORGAOS_PATH)
+
+        total = df_gold.height
+        ativas = df_gold.filter(pl.col("status_sancao") == "ATIVA").height
+        logger.info(f"Gold CEIS — Total: {total} | Ativas: {ativas} | Expiradas: {total - ativas}")
+
 
 if __name__ == "__main__":
-    pipeline = CeisGoldPipeline()
-    pipeline.run()\n\n
-========================================
-📄 ARQUIVO: src/core/logging.py
-========================================
+    CeisGoldPipeline().run()\n
+=== ARQUIVO: /home/rogerio/Projetos/GOVBR/Monitor/src/core/logging.py ===
 import logging
 import sys
 
@@ -542,34 +1743,182 @@ def setup_logging():
     logging.getLogger("azure").setLevel(logging.WARNING)
 
 logger = logging.getLogger("govbr-monitor")
-\n\n
-========================================
-📄 ARQUIVO: src/core/config.py
-========================================
+\n
+=== ARQUIVO: /home/rogerio/Projetos/GOVBR/Monitor/src/core/config.py ===
 import os
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+
 class Settings(BaseSettings):
     # API GovBR / CGU
-    CGU_API_BASE_URL: str = "https://api.portaldatransparencia.gov.br/api-v1"
-    CGU_API_KEY: str = os.getenv("CGU_API_KEY", "ad62f7c9bd79569e82165448ce33496e")
-    
-    # Azure Storage / Data Lake
-    AZURE_STORAGE_CONNECTION_STRING: str = os.getenv("AZURE_STORAGE_CONNECTION_STRING", "")
-    AZURE_BRONZE_CONTAINER: str = "bronze"
-    
-    # Configurações Locais de Fallback
+    CGU_API_BASE_URL: str = "https://api.portaldatransparencia.gov.br/api-de-dados"
+    CGU_API_KEY: str = ""
+
+    # Cloudflare R2
+    CLOUDFLARE_ACCOUNT_ID: str = ""
+    CLOUDFLARE_ACCESS_KEY_ID: str = ""
+    CLOUDFLARE_SECRET_ACCESS_KEY: str = ""
+    CLOUDFLARE_BUCKET_NAME: str = "govbr-datalake"
+
+    # Endpoint R2 — gerado automaticamente com base no account_id
+    @property
+    def r2_endpoint_url(self) -> str:
+        return f"https://{self.CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com"
+
+    # Configurações locais de fallback
     LOCAL_DATA_DIR: str = "data"
 
     model_config = SettingsConfigDict(
-        env_file=".env", 
-        env_file_encoding="utf-8", 
+        env_file=".env",
+        env_file_encoding="utf-8",
         extra="ignore"
     )
 
-settings = Settings()
-\n\n
-========================================
-📄 ARQUIVO: src/core/__init__.py
-========================================
-\n\n
+
+settings = Settings()\n
+=== ARQUIVO: /home/rogerio/Projetos/GOVBR/Monitor/src/core/__init__.py ===
+\n
+=== ARQUIVO: /home/rogerio/Projetos/GOVBR/Monitor/src/core/storage.py ===
+import boto3
+from botocore.exceptions import ClientError
+from pathlib import Path
+import polars as pl
+import io
+import logging
+
+from src.core.config import settings
+
+logger = logging.getLogger(__name__)
+
+
+class R2Storage:
+    """Cliente para Cloudflare R2 — compatível com S3."""
+
+    def __init__(self):
+        self.client = boto3.client(
+            "s3",
+            endpoint_url=settings.r2_endpoint_url,
+            aws_access_key_id=settings.CLOUDFLARE_ACCESS_KEY_ID,
+            aws_secret_access_key=settings.CLOUDFLARE_SECRET_ACCESS_KEY,
+            region_name="auto",
+        )
+        self.bucket = settings.CLOUDFLARE_BUCKET_NAME
+
+    def upload_parquet(self, df: pl.DataFrame, path: str) -> bool:
+        """Salva um DataFrame Polars como Parquet no R2."""
+        try:
+            buffer = io.BytesIO()
+            df.write_parquet(buffer, compression="zstd")
+            buffer.seek(0)
+            self.client.put_object(
+                Bucket=self.bucket,
+                Key=path,
+                Body=buffer.getvalue(),
+                ContentType="application/octet-stream",
+            )
+            logger.info(f"Upload concluído: {path}")
+            return True
+        except ClientError as e:
+            logger.error(f"Erro ao fazer upload para R2: {e}")
+            return False
+
+    def download_parquet(self, path: str) -> pl.DataFrame | None:
+        """Lê um Parquet do R2 e retorna como DataFrame Polars."""
+        try:
+            response = self.client.get_object(Bucket=self.bucket, Key=path)
+            buffer = io.BytesIO(response["Body"].read())
+            return pl.read_parquet(buffer)
+        except ClientError as e:
+            logger.error(f"Erro ao baixar do R2: {path} — {e}")
+            return None
+
+    def file_exists(self, path: str) -> bool:
+        """Verifica se um arquivo existe no R2."""
+        try:
+            self.client.head_object(Bucket=self.bucket, Key=path)
+            return True
+        except ClientError:
+            return False
+
+    def list_files(self, prefix: str) -> list[str]:
+        """Lista arquivos no R2 com um prefixo."""
+        try:
+            response = self.client.list_objects_v2(
+                Bucket=self.bucket,
+                Prefix=prefix,
+            )
+            return [obj["Key"] for obj in response.get("Contents", [])]
+        except ClientError as e:
+            logger.error(f"Erro ao listar arquivos no R2: {e}")
+            return []
+
+    def save_local_fallback(self, df: pl.DataFrame, path: str) -> bool:
+        """Fallback local caso R2 não esteja disponível."""
+        try:
+            local_path = Path(settings.LOCAL_DATA_DIR) / path
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            df.write_parquet(local_path, compression="zstd")
+            logger.info(f"Salvo localmente: {local_path}")
+            return True
+        except Exception as e:
+            logger.error(f"Erro ao salvar localmente: {e}")
+            return False
+
+    def upload_or_fallback(self, df: pl.DataFrame, path: str) -> bool:
+        """Tenta R2 primeiro, cai para local se falhar."""
+        if self.upload_parquet(df, path):
+            return True
+        logger.warning(f"R2 indisponível, salvando localmente: {path}")
+        return self.save_local_fallback(df, path)
+
+
+# Instância global
+storage = R2Storage()\n
+=== ARQUIVO: /home/rogerio/Projetos/GOVBR/Monitor/pyproject.toml ===
+[tool.poetry]
+name = "govbr-monitor"
+version = "0.1.0"
+description = "Monitor de auditoria de dados públicos com Polars e Azure"
+authors = ["Rogério Oliveira <seu.email@example.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+polars = "^1.0"
+fastapi = "^0.110.0"
+uvicorn = "^0.28.0"
+streamlit = "^1.32.0"
+requests = "^2.31.0"
+pydantic-settings = "^2.2.1"
+azure-storage-blob = "^12.19.0"
+pyodbc = "^5.1.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.1.0"
+ruff = "^0.3.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"\n
+=== ARQUIVO: /home/rogerio/Projetos/GOVBR/Monitor/inspect_silver.py ===
+import os
+import polars as pl
+from src.core.config import settings
+
+input_path = os.path.join(settings.LOCAL_DATA_DIR, "silver", "ceis_clean.parquet")
+
+if not os.path.exists(input_path):
+    print("Arquivo Silver não encontrado!")
+else:
+    # Lendo o arquivo Parquet tratado
+    df = pl.read_parquet(input_path)
+    
+    print("--- SCHEMA DA CAMADA SILVER ---")
+    print(df.schema)
+    
+    print("\n--- PRIMEIROS 5 REGISTROS LIMPOS ---")
+    # Configuração para o Polars mostrar todas as colunas sem cortar o texto
+    with pl.Config(tbl_cols=10, tbl_rows=5, fmt_str_lengths=50):
+        print(df.head(5))\n
+=== ARQUIVO: /home/rogerio/Projetos/GOVBR/Monitor/tests/__init__.py ===
+\n
