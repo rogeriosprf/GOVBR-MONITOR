@@ -5,22 +5,21 @@ on:
   schedule:
     - cron: '0 3 * * *'
 
-# Força o runner do GitHub a usar o Node 24 por padrão nas ações
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   atualizar-datalake:
     runs-on: ubuntu-latest
 
-    steps:
-      # Atualizado de @v4 para @v5 (Suporte nativo a Node 24)
-      - name: Checkout do código
-        uses: actions/checkout@v5
+    # Injeta a variável diretamente no ambiente do runner para forçar o Node 24
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
-      # Atualizado de @v5 para @v6 (Suporte nativo a Node 24)
+    steps:
+      # Mantemos as versões estáveis atuais que existem no mercado
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
       - name: Configurar o Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
