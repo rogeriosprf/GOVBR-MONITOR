@@ -1,3 +1,15 @@
+import os
+import sys
+
+# ============================================================
+# PATCH DE INFRAESTRUTURA: SISTEMA DE CAMINHOS (PATCH PATH)
+# ============================================================
+# Garante que a raiz do repositório 'govbr-monitor' esteja no sys.path,
+# permitindo que o Streamlit Cloud localize a pasta 'src' corretamente.
+root_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
+if root_path not in sys.path:
+    sys.path.insert(0, root_path)
+
 import streamlit as st
 import polars as pl
 import plotly.express as px
@@ -12,6 +24,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# --- CSS Customizado para Interface Dark Mode e Cards Teatrais ---
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@300;400;500;600&display=swap');
