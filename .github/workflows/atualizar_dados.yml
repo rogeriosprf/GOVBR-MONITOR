@@ -1,0 +1,41 @@
+name: Carga Automática de Dados
+
+on:
+  workflow_dispatch: # Permite que você clique num botão no GitHub para rodar manualmente
+  schedule:
+    - cron: '0 3 * * *' # Roda automaticamente todos os dias às 03:00 UTC (00:00 Horário de Brasília)
+
+jobs:
+  atualizar-datalake:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Configurar o Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar o Poetry
+        uses: snok/install-poetry@v1
+        with:
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+
+      - name: Instalar Dependências
+        run: poetry install --no-root
+
+      - name: Executar Pipeline de Carga e Auditoria
+        env:
+          # Injeta as chaves que seu script precisa para falar com a CGU e o Cloudflare R2
+          CGU_API_BASE_URL: ${{ secrets.CGU_API_BASE_URL }}
+          CGU_API_KEY: ${{ secrets.CGU_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_ACCESS_KEY_ID }}
+          CLOUDFLARE_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_BUCKET_NAME: ${{ secrets.CLOUDFLARE_BUCKET_NAME }}
+          LOCAL_DATA_DIR: "data"
+        run: |
+          poetry run python -m src.main
