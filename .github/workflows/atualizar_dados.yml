@@ -1,20 +1,26 @@
 name: Carga Automática de Dados
 
 on:
-  workflow_dispatch: # Permite que você clique num botão no GitHub para rodar manualmente
+  workflow_dispatch:
   schedule:
-    - cron: '0 3 * * *' # Roda automaticamente todos os dias às 03:00 UTC (00:00 Horário de Brasília)
+    - cron: '0 3 * * *'
+
+# Força o runner do GitHub a usar o Node 24 por padrão nas ações
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   atualizar-datalake:
     runs-on: ubuntu-latest
 
     steps:
+      # Atualizado de @v4 para @v5 (Suporte nativo a Node 24)
       - name: Checkout do código
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
+      # Atualizado de @v5 para @v6 (Suporte nativo a Node 24)
       - name: Configurar o Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
@@ -29,7 +35,6 @@ jobs:
 
       - name: Executar Pipeline de Carga e Auditoria
         env:
-          # Injeta as chaves que seu script precisa para falar com a CGU e o Cloudflare R2
           CGU_API_BASE_URL: ${{ secrets.CGU_API_BASE_URL }}
           CGU_API_KEY: ${{ secrets.CGU_API_KEY }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
